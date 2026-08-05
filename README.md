@@ -1,0 +1,1 @@
+# sakura-talos-argocd
