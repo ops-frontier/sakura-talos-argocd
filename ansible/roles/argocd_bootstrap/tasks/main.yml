@@ -1,0 +1,233 @@
+---
+# argocd_bootstrap role – ArgoCD の初期設定マニフェストを apply する
+# kubernetes.core モジュールで localhost から k3s API に接続する
+# push_infra_apps role の後に実行すること
+
+- name: Apply ArgoCD bootstrap manifest
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('file', rendered_dir + '/bootstrap.yaml') | from_yaml_all | select | list }}"
+  register: _bootstrap_result
+  until: _bootstrap_result is not failed
+  retries: 5
+  delay: 15
+
+- name: Apply ArgoCD config (SSO + RBAC)
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('file', rendered_dir + '/argocd-config.yaml') | from_yaml_all | select | list }}"
+  register: _config_result
+  until: _config_result is not failed
+  retries: 5
+  delay: 15
+
+- name: Rollout restart argocd-server
+  kubernetes.core.k8s:
+    state: patched
+    kind: Deployment
+    name: argocd-server
+    namespace: argocd
+    definition:
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Wait for argocd-server rollout to complete
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    name: argocd-server
+    namespace: argocd
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+
+- name: Wait for app-of-apps to sync
+  kubernetes.core.k8s_info:
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    name: app-of-apps
+    namespace: argocd
+  register: _app_status
+  until: >-
+    (_app_status.resources | default([])) | length > 0 and
+    (_app_status.resources[0].status.sync.status | default('')) == 'Synced'
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Wait for cert-manager namespace
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: cert-manager
+  register: _cm_ns
+  until: (_cm_ns.resources | default([])) | length > 0
+  retries: 60
+  delay: 10
+  failed_when: false
+
+- name: Wait for cert-manager to be available
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    name: cert-manager
+    namespace: cert-manager
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 60
+  register: _cm_wait_result
+  until: _cm_wait_result is not failed
+  retries: 10
+  delay: 30
+
+- name: Wait for cert-manager-webhook to be available
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    name: cert-manager-webhook
+    namespace: cert-manager
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 60
+  register: _cmw_wait_result
+  until: _cmw_wait_result is not failed
+  retries: 10
+  delay: 30
+
+- name: Wait for traefik namespace (Certificate apply の前提条件)
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: traefik
+  register: _traefik_ns
+  until: (_traefik_ns.resources | default([])) | length > 0
+  retries: 60
+  delay: 10
+  failed_when: false
+
+- name: Apply cert-manager issuers
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('file', rendered_dir + '/cert-manager-issuers.yaml') | from_yaml_all | select | list }}"
+  register: _cm_result
+  until: _cm_result is not failed
+  retries: 5
+  delay: 15
+
+- name: Wait for letsencrypt ClusterIssuer to be Ready (ACME アカウント登録待ち)
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: ClusterIssuer
+  register: _issuers
+  until: >-
+    (_issuers.resources | default([])) | length > 0 and
+    (_issuers.resources |
+     map(attribute='status.conditions', default=[]) |
+     flatten |
+     selectattr('type', 'equalto', 'Ready') |
+     selectattr('status', 'equalto', 'True') |
+     list | length) > 0
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Apply grafana OAuth secret
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('file', rendered_dir + '/grafana-oauth-secret.yaml') | from_yaml_all | select | list }}"
+  register: _grafana_result
+  until: _grafana_result is not failed
+  retries: 5
+  delay: 15
+
+- name: Apply cilium assigned IPs
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('file', rendered_dir + '/cilium-assigned-ips.yaml') | from_yaml_all | select | list }}"
+  ignore_errors: true  # namespace がまだ存在しない場合は無視
+
+- name: Wait for Traefik CRD
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: tlsstores.traefik.io
+  register: _traefik_crd
+  until: (_traefik_crd.resources | default([])) | length > 0
+  retries: 60
+  delay: 10
+  failed_when: false
+
+- name: Wait for Traefik to be available
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    name: traefik
+    namespace: traefik
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+
+- block:
+    - name: Wait for wildcard-tls certificate to be Ready (DNS-01 チャレンジ完了待ち)
+      kubernetes.core.k8s_info:
+        api_version: cert-manager.io/v1
+        kind: Certificate
+        name: wildcard-tls
+        namespace: traefik
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 180
+  rescue:
+    - name: Dump cert-manager diagnostics (証明書発行失敗時の診断情報)
+      kubernetes.core.k8s_info:
+        api_version: "{{ item.api_version }}"
+        kind: "{{ item.kind }}"
+        namespace: "{{ item.namespace | default(omit) }}"
+      loop:
+        - {api_version: "cert-manager.io/v1",      kind: ClusterIssuer}
+        - {api_version: "cert-manager.io/v1",      kind: Certificate, namespace: traefik}
+        - {api_version: "cert-manager.io/v1",      kind: CertificateRequest}
+        - {api_version: "acme.cert-manager.io/v1", kind: Challenge}
+        - {api_version: "acme.cert-manager.io/v1", kind: Order}
+      register: _diag_resources
+      ignore_errors: true
+
+    - name: Show cert-manager resource status
+      ansible.builtin.debug:
+        var: _diag_resources
+
+    - name: Fail - wildcard-tls 証明書が Ready になりませんでした
+      ansible.builtin.fail:
+        msg: >-
+          wildcard-tls 証明書が 30 分待っても Ready になりませんでした。
+          上記の cert-manager リソース状態を確認してください。
+
+- name: Apply ArgoCD ingress
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('file', rendered_dir + '/argocd-ingress.yaml') | from_yaml_all | select | list }}"
+  register: _ingress_result
+  until: _ingress_result is not failed
+  retries: 5
+  delay: 15
+
+- name: Apply lb-controller secrets
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('file', rendered_dir + '/lb-controller-secrets.yaml') | from_yaml_all | select | list }}"
+  register: _lb_controller_secrets_result
+  until: _lb_controller_secrets_result is not failed
+  retries: 5
+  delay: 15
+
+- name: Bootstrap complete
+  ansible.builtin.debug:
+    msg: "ArgoCD ブートストラップ完了 ✓"
+

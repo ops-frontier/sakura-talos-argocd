@@ -1,0 +1,24 @@
+{
+  "name": "Flatcar IaC (Terraform + k3s)",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/robbert229/devcontainer-features/opentofu:1": {
+      },
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers-contrib/features/ansible:2": {}
+  },
+  "waitFor": "postCreateCommand",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "hashicorp.terraform",
+        "hashicorp.hcl",
+        "redhat.ansible",
+        "yzhang.markdown-all-in-one"
+      ]
+    }
+  }
+}

@@ -1,0 +1,51 @@
+---
+# ssm_tunnel role (start) – k3s API (6443) 用の SSM ポートフォワードセッションを
+# バックグラウンドで起動する (aws ssm start-session の PID を pidfile に記録する)
+#
+# 呼び出し側は `computer_name` (トンネル先ノード名) を vars として渡すこと。
+
+- name: Check if tunnel pidfile exists
+  ansible.builtin.stat:
+    path: "{{ ssm_tunnel_pidfile }}"
+  register: _ssm_tunnel_pidfile
+
+- name: Check if tunnel process is still alive
+  ansible.builtin.command:
+    cmd: "kill -0 {{ lookup('file', ssm_tunnel_pidfile) }}"
+  register: _ssm_tunnel_alive
+  changed_when: false
+  failed_when: false
+  when: _ssm_tunnel_pidfile.stat.exists
+
+- name: Determine whether a new tunnel needs to be started
+  ansible.builtin.set_fact:
+    _ssm_tunnel_need_start: "{{ not _ssm_tunnel_pidfile.stat.exists or _ssm_tunnel_alive.rc != 0 }}"
+
+- name: Look up SSM managed instance ID
+  ansible.builtin.include_role:
+    name: ssm_instance_id
+  when: _ssm_tunnel_need_start
+
+- name: Start SSM port-forwarding session in background
+  # setsid でセッション/プロセスグループのリーダーとして起動する。
+  # aws ssm start-session は内部で session-manager-plugin を子プロセスとして
+  # 起動するため、停止時は PID ではなくプロセスグループ (-PID) 全体を
+  # kill する必要がある (親だけ kill すると子プロセスが残りポートが
+  # 塞がったままになる)。
+  ansible.builtin.shell: >
+    setsid nohup aws ssm start-session
+    --target {{ ssm_instance_id }}
+    --document-name AWS-StartPortForwardingSession
+    --parameters '{"portNumber":["6443"],"localPortNumber":["{{ k3s_api_local_port }}"]}'
+    > {{ ssm_tunnel_logfile }} 2>&1 < /dev/null &
+    echo $! > {{ ssm_tunnel_pidfile }}
+  args:
+    executable: /bin/bash
+  environment: "{{ aws_assumed_env }}"
+  when: _ssm_tunnel_need_start
+
+- name: Wait for k3s API tunnel to be ready
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ k3s_api_local_port }}"
+    timeout: 60

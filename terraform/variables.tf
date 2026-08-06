@@ -1,0 +1,150 @@
+# ---------------------------------------------------------------
+# さくらのクラウド 認証情報
+# ---------------------------------------------------------------
+variable "sakura_access_token" {
+  description = "さくらのクラウド API アクセストークン"
+  type        = string
+  sensitive   = true
+}
+
+variable "sakura_access_token_secret" {
+  description = "さくらのクラウド API アクセストークン シークレット"
+  type        = string
+  sensitive   = true
+}
+
+# ---------------------------------------------------------------
+# Cloudflare 認証情報
+# ---------------------------------------------------------------
+variable "cloudflare_account_id" {
+  description = "Cloudflare アカウント ID"
+  type        = string
+  sensitive   = true
+}
+
+variable "cloudflare_access_token" {
+  description = "Cloudflare API アクセストークン (Zone:Read + DNS:Edit 権限が必要)"
+  type        = string
+  sensitive   = true
+}
+
+# ---------------------------------------------------------------
+# AWS ロール名
+# ---------------------------------------------------------------
+variable "aws_role_arn" {
+  description = "AWS ロール ARN"
+  type        = string
+  sensitive   = true
+}
+
+# ---------------------------------------------------------------
+# サーバ設定
+# ---------------------------------------------------------------
+variable "sakura_label_prefix" {
+  description = "サーバのラベルプリフィックス (ホスト名と一致させる)"
+  type        = string
+  default     = "ops-frontier"
+}
+
+variable "sakura_region" {
+  description = "さくらのクラウドのリージョン"
+  type        = string
+  default     = "is1c"
+}
+
+variable "sakura_server_cpu" {
+  description = "サーバのCPU数"
+  type        = number
+  default     = 2
+}
+
+variable "sakura_server_memory" {
+  description = "サーバのメモリサイズ(GB)"
+  type        = number
+  default     = 4
+}
+
+variable "sakura_server_commitment" {
+  description = "サーバの占有度 (standard or dedicatedcpu)"
+  type        = string
+  default     = "standard"
+}
+
+variable "sakura_server_cpu_model" {
+  description = "サーバのCPUモデル"
+  type        = string
+  default     = "uncategorized"
+}
+
+variable "sakura_iso_image_id" {
+  description = "さくらのクラウドにアップロードした Flatcar Linux インストーラ ISO の ID (廃止: Ubuntu アーカイブブートに移行済み)"
+  type        = string
+  default     = null
+}
+
+variable "sakura_registry_subdomain_label" {
+  description = "コンテナレジストリのサブドメインラベル (グローバル一意の必要があります)"
+  type        = string
+  default     = "ops-frontier-registry-20260730-2"
+}
+
+# ---------------------------------------------------------------
+# DNS / TLS
+# ---------------------------------------------------------------
+variable "domain" {
+  description = "Cloudflare で管理するゾーン名 (例: example.com)"
+  type        = string
+}
+
+variable "le_environment" {
+  description = "Let's Encrypt の環境 (production または staging)"
+  type        = string
+  default     = "production"
+
+  validation {
+    condition     = contains(["production", "staging"], var.le_environment)
+    error_message = "le_environment は 'production' または 'staging' を指定してください。"
+  }
+}
+
+# ---------------------------------------------------------------
+# GitHub OAuth
+# ---------------------------------------------------------------
+variable "gh_organization" {
+  description = "GitHub 組織 ID"
+  type        = string
+  default     = "chip-in-v2"
+}
+
+variable "gh_client_id_grafana" {
+  description = "Grafana 用 GitHub OAuth Client ID"
+  type        = string
+  sensitive   = true
+}
+
+variable "gh_client_secret_grafana" {
+  description = "Grafana 用 GitHub OAuth Client Secret"
+  type        = string
+  sensitive   = true
+}
+
+variable "gh_client_id_argocd" {
+  description = "ArgoCD 用 GitHub OAuth Client ID"
+  type        = string
+  sensitive   = true
+}
+
+variable "gh_client_secret_argocd" {
+  description = "ArgoCD 用 GitHub OAuth Client Secret"
+  type        = string
+  sensitive   = true
+}
+
+# ---------------------------------------------------------------
+# 自動シャットダウン
+# ---------------------------------------------------------------
+variable "auto_shutdown_at_utc" {
+  description = "自動シャットダウンの時刻 (UTC)。systemd OnCalendar 形式 (例: '11:00:00')。空文字列の場合は自動シャットダウンを無効化する。"
+  type        = string
+  default     = ""
+}

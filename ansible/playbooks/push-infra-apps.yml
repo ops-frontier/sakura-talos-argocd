@@ -1,0 +1,45 @@
+---
+# push-infra-apps.yml – infra-apps Helm chart を OCI レジストリに push し、
+# ArgoCD の app-of-apps targetRevision を新しいチャートバージョンに更新する
+- name: Push infra-apps Helm chart to OCI registry
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - terraform_outputs
+    - push_infra_apps
+  tasks:
+    - name: Register sv1 as dynamic host for ArgoCD update
+      ansible.builtin.add_host:
+        name: _sv1_for_patch
+        ansible_host: "{{ tf_outputs.node_public_ips.value[tf_outputs.node_public_ips.value.keys() | sort | first] }}"
+        ansible_user: core
+        ansible_ssh_private_key_file: "{{ ssh_key_path }}"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=accept-new
+          -o UserKnownHostsFile={{ known_hosts_path }}
+          -o ConnectTimeout=15
+          -o BatchMode=yes
+
+- name: Update app-of-apps targetRevision in ArgoCD
+  hosts: _sv1_for_patch
+  gather_facts: false
+  tasks:
+    - name: kubectl patch app-of-apps targetRevision
+      # argv 形式を使うことで shell のクォート処理を完全に回避する
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - kubectl
+          - patch
+          - application
+          - app-of-apps
+          - -n
+          - argocd
+          - --type=merge
+          - --patch
+          - '{"spec":{"source":{"targetRevision":"{{ infra_apps_chart_version }}"}}}'
+      changed_when: true
+
+    - name: Show app-of-apps update completion
+      ansible.builtin.debug:
+        msg: "app-of-apps targetRevision → {{ infra_apps_chart_version }}"

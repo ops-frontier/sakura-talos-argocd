@@ -1,0 +1,216 @@
+---
+# push_infra_apps role – infra-apps Helm chart を OCI レジストリに push する
+# helm CLI を使わず ansible.builtin モジュールのみで実装
+# このロールは localhost 上で実行される
+
+- name: Set infra-apps template variables
+  ansible.builtin.set_fact:
+    domain: "{{ lookup('env', 'DOMAIN') or lookup('env', 'TF_VAR_domain') }}"
+    cloudflare_access_token: "{{ lookup('env', 'CLOUDFLARE_ACCESS_TOKEN') or lookup('env', 'TF_VAR_cloudflare_access_token') }}"
+    le_environment: >-
+      {{ lookup('env', 'LE_ENVIRONMENT')
+         or lookup('env', 'TF_VAR_le_environment')
+         | default('production', true) }}
+    gh_organization: >-
+      {{ lookup('env', 'GH_ORGANIZATION')
+         or lookup('env', 'TF_VAR_gh_organization')
+         | default('chip-in-v2', true) }}
+    gh_client_id_argocd: "{{ lookup('env', 'GH_CLIENT_ID_ARGOCD') or lookup('env', 'TF_VAR_gh_client_id_argocd') }}"
+    gh_client_secret_argocd: "{{ lookup('env', 'GH_CLIENT_SECRET_ARGOCD') or lookup('env', 'TF_VAR_gh_client_secret_argocd') }}"
+    gh_client_id_grafana: "{{ lookup('env', 'GH_CLIENT_ID_GRAFANA') or lookup('env', 'TF_VAR_gh_client_id_grafana') }}"
+    gh_client_secret_grafana: "{{ lookup('env', 'GH_CLIENT_SECRET_GRAFANA') or lookup('env', 'TF_VAR_gh_client_secret_grafana') }}"
+    init_internal_ip: "{{ tf_outputs.node_private_ips.value[tf_outputs.node_private_ips.value.keys() | sort | first] }}"
+    lb_vip_ip: "{{ tf_outputs.lb_global_ip.value }}"
+    node_public_ips: "{{ tf_outputs.node_public_ips.value }}"
+
+- name: Ensure rendered/ directory exists
+  ansible.builtin.file:
+    path: "{{ rendered_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Render argocd manifests
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ rendered_dir }}/{{ item.dest }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: "{{ workspace_dir }}/argocd/manifests/argocd-config.yaml.j2",        dest: "argocd-config.yaml",        mode: "0600" }
+    - { src: "{{ workspace_dir }}/argocd/manifests/argocd-ingress.yaml.j2",       dest: "argocd-ingress.yaml",       mode: "0600" }
+    - { src: "{{ workspace_dir }}/argocd/manifests/cert-manager-issuers.yaml.j2", dest: "cert-manager-issuers.yaml", mode: "0600" }
+    - { src: "{{ workspace_dir }}/argocd/manifests/grafana-oauth-secret.yaml.j2", dest: "grafana-oauth-secret.yaml", mode: "0600" }
+    - { src: "{{ workspace_dir }}/argocd/manifests/cilium-assigned-ips.yaml.j2",  dest: "cilium-assigned-ips.yaml",  mode: "0640" }
+    - { src: "{{ workspace_dir }}/argocd/manifests/lb-controller.yaml.j2",         dest: "lb-controller.yaml",         mode: "0640" }
+    - { src: "{{ workspace_dir }}/argocd/manifests/lb-controller-secrets.yaml.j2", dest: "lb-controller-secrets.yaml", mode: "0600" }
+    - { src: "{{ workspace_dir }}/argocd/apps/infra-apps.yaml.j2",                dest: "infra-apps.yaml",           mode: "0640" }
+
+- name: Copy bootstrap.yaml (no template variables)
+  ansible.builtin.copy:
+    src: "{{ workspace_dir }}/argocd/bootstrap.yaml"
+    dest: "{{ rendered_dir }}/bootstrap.yaml"
+    mode: "0640"
+
+- name: Create Helm chart temp directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: infra-apps-chart-
+  register: _chart_tmpdir
+
+- name: Create chart directory structure
+  ansible.builtin.file:
+    path: "{{ _chart_tmpdir.path }}/{{ infra_apps_chart_name }}/templates"
+    state: directory
+    mode: "0755"
+
+- name: Write Chart.yaml
+  ansible.builtin.copy:
+    content: |
+      apiVersion: v2
+      name: {{ infra_apps_chart_name }}
+      description: ArgoCD Application リソース (infra apps)
+      type: application
+      version: {{ infra_apps_chart_version }}
+    dest: "{{ _chart_tmpdir.path }}/{{ infra_apps_chart_name }}/Chart.yaml"
+    mode: "0644"
+
+- name: Copy rendered infra-apps.yaml to chart templates
+  ansible.builtin.copy:
+    src: "{{ rendered_dir }}/infra-apps.yaml"
+    dest: "{{ _chart_tmpdir.path }}/{{ infra_apps_chart_name }}/templates/applications.yaml"
+    mode: "0644"
+
+- name: Copy rendered cilium-assigned-ips.yaml to chart templates
+  ansible.builtin.copy:
+    src: "{{ rendered_dir }}/cilium-assigned-ips.yaml"
+    dest: "{{ _chart_tmpdir.path }}/{{ infra_apps_chart_name }}/templates/cilium-assigned-ips.yaml"
+    mode: "0644"
+
+- name: Copy rendered lb-controller.yaml to chart templates
+  ansible.builtin.copy:
+    src: "{{ rendered_dir }}/lb-controller.yaml"
+    dest: "{{ _chart_tmpdir.path }}/{{ infra_apps_chart_name }}/templates/lb-controller.yaml"
+    mode: "0644"
+
+- name: Package Helm chart
+  ansible.builtin.command:
+    cmd: "helm package {{ _chart_tmpdir.path }}/{{ infra_apps_chart_name }} --destination {{ _chart_tmpdir.path }}"
+  changed_when: true
+
+- name: Login to OCI registry
+  ansible.builtin.command:
+    cmd: >
+      helm registry login {{ tf_outputs.container_registry_fqdn.value }}
+      --username {{ tf_outputs.container_registry_push_user.value }}
+      --password-stdin
+    stdin: "{{ tf_outputs.container_registry_push_password.value }}"
+  changed_when: true
+  no_log: true
+
+- name: Push Helm chart to OCI registry
+  ansible.builtin.command:
+    cmd: >
+      helm push
+      {{ _chart_tmpdir.path }}/{{ infra_apps_chart_name }}-{{ infra_apps_chart_version }}.tgz
+      oci://{{ tf_outputs.container_registry_fqdn.value }}
+  changed_when: true
+
+- name: Cleanup chart temp directory
+  ansible.builtin.file:
+    path: "{{ _chart_tmpdir.path }}"
+    state: absent
+
+- name: Show push completion
+  ansible.builtin.debug:
+    msg: >-
+      chart push 完了:
+      oci://{{ tf_outputs.container_registry_fqdn.value }}/{{ infra_apps_chart_name }}:{{ infra_apps_chart_version }}
+
+# ── lb-controller コンテナイメージのビルド・プッシュ (crane 使用) ─
+# Docker デーモン不要。crane (go-containerregistry) で OCI イメージを構築する。
+# crane は .devcontainer/post-create.sh でインストール済み (/usr/local/bin/crane)。
+
+- name: Login to container registry (crane)
+  ansible.builtin.command:
+    cmd: >
+      crane auth login
+      {{ tf_outputs.container_registry_fqdn.value }}
+      -u {{ tf_outputs.container_registry_push_user.value }}
+      --password-stdin
+    stdin: "{{ tf_outputs.container_registry_push_password.value }}"
+  changed_when: true
+  no_log: true
+
+- name: Create lb-controller build directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /tmp/lb-controller-build/app
+    - /tmp/lb-controller-build/app/lib
+  # パッケージは /app/lib にインストールし、PYTHONPATH で参照させる。
+  # Python バージョンが「/usr/local/lib/python3.XX/site-packages」に
+  # 重ね書きする方式だと namespace package と誤認される問題を回避できる。
+
+- name: Copy controller.py to build layer
+  ansible.builtin.copy:
+    src: "{{ workspace_dir }}/lb-controller/controller.py"
+    dest: /tmp/lb-controller-build/app/controller.py
+    mode: "0755"
+
+- name: Install Python dependencies into build layer
+  ansible.builtin.command:
+    cmd: >
+      pip3 install
+      --target /tmp/lb-controller-build/app/lib
+      --quiet
+      -r {{ workspace_dir }}/lb-controller/requirements.txt
+  changed_when: true
+
+- name: Fix permissions on build layer (others に execute を付与)
+  ansible.builtin.command:
+    cmd: chmod -R a+rX /tmp/lb-controller-build
+  changed_when: false
+  # pip --target でインストールされたディレクトリが others に execute ビットを持たない
+  # 場合があり、nobody で実行するコンテナが中に入れず namespace package と誤認される。
+  # a+rX = ディレクトリにのみ execute を追加 (ファイルには付けない)
+
+- name: Create OCI layer tarball
+  ansible.builtin.command:
+    cmd: tar -czf /tmp/lb-controller-layer.tar.gz -C /tmp/lb-controller-build .
+  changed_when: true
+
+- name: Build and push lb-controller image (crane append)
+  ansible.builtin.command:
+    cmd: >
+      crane append
+      --base python:3.14-slim
+      --platform linux/amd64
+      --new_layer /tmp/lb-controller-layer.tar.gz
+      --new_tag {{ tf_outputs.container_registry_fqdn.value }}/lb-controller:{{ lb_controller_version }}
+  changed_when: true
+
+- name: Set image workdir, entrypoint and PYTHONPATH (crane mutate)
+  ansible.builtin.command:
+    cmd: >
+      crane mutate
+      --workdir /app
+      --entrypoint "python,-u,controller.py"
+      --env "PYTHONPATH=/app/lib"
+      --user nobody
+      {{ tf_outputs.container_registry_fqdn.value }}/lb-controller:{{ lb_controller_version }}
+  changed_when: true
+
+- name: Cleanup lb-controller build artifacts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/lb-controller-build
+    - /tmp/lb-controller-layer.tar.gz
+
+- name: Show lb-controller push completion
+  ansible.builtin.debug:
+    msg: >-
+      lb-controller image push 完了:
+      {{ tf_outputs.container_registry_fqdn.value }}/lb-controller:{{ lb_controller_version }}

@@ -1,0 +1,30 @@
+---
+# update_known_hosts role – 古い known_hosts エントリを削除する
+#
+# SSM Session Manager 経由の接続ではポートスキャンによる事前の
+# ssh-keyscan は行えない (直接到達可能な TCP ポートが存在しないため)。
+# サーバが再構築されてホスト鍵が変わった場合に備えて古いエントリのみ
+# 削除し、実際の接続時に StrictHostKeyChecking=accept-new で
+# 新しいホスト鍵を信頼 (TOFU) させる。
+#
+# 呼び出し側は `target_host_name` (ComputerName / SSH エイリアス名) を
+# vars として渡すこと。
+
+- name: Ensure .ssh directory exists
+  ansible.builtin.file:
+    path: "{{ ssh_key_path | dirname }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  run_once: true
+
+- name: Remove stale known_hosts entry
+  ansible.builtin.command:
+    cmd: "ssh-keygen -R {{ target_host_name }} -f {{ known_hosts_path }}"
+  delegate_to: localhost
+  changed_when: true
+  failed_when: false
+
+- name: Show completion
+  ansible.builtin.debug:
+    msg: "{{ target_host_name }}: 古い known_hosts エントリを削除しました"

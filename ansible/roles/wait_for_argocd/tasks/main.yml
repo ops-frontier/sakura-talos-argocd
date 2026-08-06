@@ -1,0 +1,22 @@
+---
+# wait_for_argocd role – ArgoCD が Ready になるまで待機する
+# kubernetes.core モジュールで localhost から k3s API に接続する
+
+- name: Wait for argocd-server to be available
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    name: argocd-server
+    namespace: argocd
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+  register: _argocd_avail
+  until: _argocd_avail is not failed
+  retries: 10
+  delay: 20
+
+- name: ArgoCD is ready
+  ansible.builtin.debug:
+    msg: "ArgoCD Ready ✓"

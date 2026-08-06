@@ -1,0 +1,11 @@
+---
+# deny-ssh.yml – allow-ssh.yml で起動した SSM ポートフォワードセッションを停止する
+- name: Deny SSH access
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Stop k3s API port-forward tunnel via SSM
+      ansible.builtin.include_role:
+        name: ssm_tunnel
+        tasks_from: stop
+

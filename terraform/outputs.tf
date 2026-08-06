@@ -1,0 +1,104 @@
+output "node_public_ips" {
+  description = "各ノードのパブリック IP アドレス"
+  value = {
+    for name in local.node_names :
+    name => try(sakuracloud_server.nodes[name].ip_address, null)
+  }
+}
+
+output "node_private_ips" {
+  description = "各ノードの内部 IP アドレス"
+  value = {
+    for name in local.node_names :
+    name => try(sakuracloud_server.nodes[name].network_interface[1].user_ip_address, null)
+  }
+}
+
+output "lb_global_ip" {
+  description = "ロードバランサのグローバル IP (VIP)"
+  value       = local.lb_vip_ip
+}
+
+output "container_registry_fqdn" {
+  description = "コンテナレジストリの FQDN"
+  value       = sakuracloud_container_registry.main.fqdn
+}
+
+output "container_registry_pull_user" {
+  description = "コンテナレジストリ Pull 用ユーザ名"
+  value       = "k3s-pull"
+}
+
+output "container_registry_pull_password" {
+  description = "コンテナレジストリ Pull 用パスワード"
+  value       = random_password.registry_pull_password.result
+  sensitive   = true
+}
+
+output "container_registry_push_user" {
+  description = "コンテナレジストリ Push 用ユーザ名"
+  value       = "ci-push"
+}
+
+output "container_registry_push_password" {
+  description = "コンテナレジストリ Push 用パスワード"
+  value       = random_password.registry_push_password.result
+  sensitive   = true
+}
+
+output "k3s_cluster_token" {
+  description = "k3s クラスタトークン"
+  value       = random_password.k3s_cluster_token.result
+  sensitive   = true
+}
+
+output "packet_filter_id" {
+  description = "パブリック NIC 用パケットフィルタ ID (ssh-config.sh で SSH 許可ルール追加に使用)"
+  value       = sakuracloud_packet_filter.public.id
+}
+
+output "ssh_public_key_openssh" {
+  description = "Terraform が生成した SSH 公開鍵 (OpenSSH 形式)"
+  value       = tls_private_key.ssh_key.public_key_openssh
+}
+
+output "lb_gateway" {
+  description = "LB ルータのデフォルトゲートウェイ IP"
+  value       = sakuracloud_internet.lb_router.gateway
+}
+
+output "lb_netmask" {
+  description = "LB ルータのプレフィックス長"
+  value       = sakuracloud_internet.lb_router.netmask
+}
+
+output "domain" {
+  description = "Cloudflare で管理するゾーン名"
+  value       = var.domain
+}
+
+output "auto_shutdown_at_utc" {
+  description = "自動シャットダウンの時刻 (UTC)。空文字列の場合は無効。"
+  value       = var.auto_shutdown_at_utc
+}
+
+output "lb_id" {
+  description = "さくらのクラウド ロードバランサ ID"
+  value       = sakuracloud_load_balancer.lb.id
+}
+
+output "sakura_region" {
+  description = "さくらのクラウド リージョン"
+  value       = var.sakura_region
+}
+
+output "ssm_activation_id" {
+  value       = aws_ssm_activation.k3s_activation.id
+  description = "SSM Agent 登録時に使用する Activation ID"
+}
+
+output "ssm_activation_code" {
+  value       = aws_ssm_activation.k3s_activation.activation_code
+  sensitive   = true # 機密情報のため Sensitive 指定
+  description = "SSM Agent 登録時に使用する Activation Code"
+}

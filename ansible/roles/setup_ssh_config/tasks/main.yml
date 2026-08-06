@@ -1,0 +1,41 @@
+---
+# setup_ssh_config role – ~/.ssh/config に AWS SSM Session Manager 経由の接続設定を書き込む
+# (パブリック IP への直接 SSH は行わず、SSM の AWS-StartSSHSession ドキュメントを
+#  ProxyCommand としてトンネルする)
+
+- name: Ensure ~/.ssh directory exists
+  ansible.builtin.file:
+    path: "~/.ssh"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  run_once: true
+
+- name: Deploy SSM SSH ProxyCommand script
+  ansible.builtin.copy:
+    src: ssm-ssh-proxy.sh
+    dest: "{{ ssm_ssh_proxy_script }}"
+    mode: "0700"
+  delegate_to: localhost
+  run_once: true
+
+- name: Write ~/.ssh/config (managed block)
+  ansible.builtin.blockinfile:
+    path: "~/.ssh/config"
+    block: |
+      Host {{ tf_outputs.node_public_ips.value.keys() | sort | join(' ') }}
+          User {{ flatcar_ssh_user }}
+          IdentityFile {{ ssh_key_path }}
+          StrictHostKeyChecking accept-new
+          UserKnownHostsFile {{ known_hosts_path }}
+          ProxyCommand {{ ssm_ssh_proxy_script }} %h %p
+    marker: "# {mark} sakura-flatcar-k3s managed section"
+    create: true
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true
+
+- name: Show completion
+  ansible.builtin.debug:
+    msg: "~/.ssh/config を更新しました (SSM Session Manager 経由)"
+  run_once: true

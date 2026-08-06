@@ -1,0 +1,114 @@
+# ---------------------------------------------------------------
+# LB CNI コントローラ - 非機密リソース
+# infra-apps Helm チャートに含め ArgoCD で管理する
+# (Secret は lb-controller-secrets.yaml.j2 で別管理)
+# ---------------------------------------------------------------
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lb-controller
+---
+# ── RBAC ──────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lb-controller
+  namespace: lb-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lb-controller
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+    resourceNames: ["lb-controller-node-ips"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lb-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lb-controller
+subjects:
+  - kind: ServiceAccount
+    name: lb-controller
+    namespace: lb-controller
+---
+# ── ノード名 → 公開 IP マッピング ─────────────────────────────────
+# k3s は node-ip に内部 IP を使用するため、Node オブジェクトの ExternalIP が
+# 設定されない場合がある。Terraform outputs の公開 IP を ConfigMap で提供する。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lb-controller-node-ips
+  namespace: lb-controller
+data:
+{% for name, ip in tf_outputs.node_public_ips.value.items() | sort %}
+  {{ name }}: "{{ ip }}"
+{% endfor %}
+---
+# ── Deployment ────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lb-controller
+  namespace: lb-controller
+  labels:
+    app: lb-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lb-controller
+  template:
+    metadata:
+      labels:
+        app: lb-controller
+    spec:
+      serviceAccountName: lb-controller
+      containers:
+        - name: lb-controller
+          image: "{{ tf_outputs.container_registry_fqdn.value }}/lb-controller:{{ lb_controller_version }}"
+          imagePullPolicy: Always
+          # コンテナイメージは python:3.14-slim ベース (dev container の Python と一致)
+          env:
+            - name: SAKURA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lb-controller-sakura
+                  key: token
+            - name: SAKURA_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lb-controller-sakura
+                  key: secret
+            - name: SAKURA_REGION
+              value: "{{ tf_outputs.sakura_region.value }}"
+            - name: LB_ID
+              value: "{{ tf_outputs.lb_id.value }}"
+            - name: LB_VIP
+              value: "{{ tf_outputs.lb_global_ip.value }}"
+            - name: NODE_IPS_CONFIG_MAP
+              value: "lb-controller-node-ips"
+            - name: NODE_IPS_NAMESPACE
+              value: "lb-controller"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 128Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
+      imagePullSecrets:
+        - name: lb-controller-registry

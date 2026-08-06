@@ -1,0 +1,326 @@
+variant: flatcar
+version: 1.0.0
+
+# ---------------------------------------------------------------
+# ホスト名
+# ---------------------------------------------------------------
+storage:
+  files:
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: "{{ hostname }}"
+
+    # ---------------------------------------------------------------
+    # パブリック NIC の静的 IP 設定 (LB ルータネットワーク / eth0)
+    # ---------------------------------------------------------------
+    - path: /etc/systemd/network/05-public.network
+      mode: 0644
+      contents:
+        inline: |
+          [Match]
+          Name=eth0
+
+          [Network]
+          Address={{ lb_ip }}/{{ lb_netmask }}
+          Gateway={{ lb_gateway }}
+          DNS=8.8.8.8
+          DNS=8.8.4.4
+
+    # ---------------------------------------------------------------
+    # 内部 NIC の静的 IP 設定 (systemd-networkd)
+    # ---------------------------------------------------------------
+    - path: /etc/systemd/network/10-internal.network
+      mode: 0644
+      contents:
+        inline: |
+          [Match]
+          Name=eth1
+
+          [Network]
+          Address={{ internal_ip }}/24
+
+    # ---------------------------------------------------------------
+    # k3s sysext イメージ (flatcar-install -o ip= によりIgnition実行時にネットワーク
+    # 到達可能なため、source: URL で直接ダウンロード)
+    # ---------------------------------------------------------------
+    - path: /etc/extensions/k3s.raw
+      mode: 0644
+      contents:
+        source: "https://github.com/flatcar/sysext-bakery/releases/download/k3s-v1.36.2+k3s1/k3s-v1.36.2+k3s1-x86-64.raw"
+
+    # ---------------------------------------------------------------
+    # ssm-agent sysext イメージ 
+    # ---------------------------------------------------------------
+    # 1. sysext イメージのダウンロード
+    - path: /etc/extensions/amazon-ssm-agent.raw
+      mode: 0644
+      contents:
+        source: https://github.com/ops-frontier/ssm-agent-sysext/releases/download/latest/amazon-ssm-agent.raw
+
+    # 2. 登録用のアクティベーションコード、リージョンなどをホスト側に配置
+    - path: /etc/amazon/ssm/ssm-activation.env
+      mode: 0600
+      contents:
+        inline: |
+          SSM_ACTIVATION_CODE={{ ssm_activation_code }}
+          SSM_ACTIVATION_ID={{ ssm_activation_id }}
+          AWS_REGION={{ aws_region }}
+
+    # ---------------------------------------------------------------
+    # k3s 設定ファイル
+    # ---------------------------------------------------------------
+{% if server_is_init %}
+    - path: /etc/rancher/k3s/config.yaml
+      mode: 0600
+      contents:
+        inline: |
+          cluster-init: true
+          token: "{{ cluster_token }}"
+          tls-san:
+            - "{{ hostname }}.{{ domain }}"
+          advertise-address: "{{ internal_ip }}"
+          node-ip: "{{ internal_ip }}"
+          flannel-backend: "none"
+          disable-network-policy: true
+          disable-kube-proxy: true
+          service-node-port-range: "80-32767"
+          disable:
+            - traefik
+            - servicelb
+          write-kubeconfig-mode: "0644"
+{% else %}
+    - path: /etc/rancher/k3s/config.yaml
+      mode: 0600
+      contents:
+        inline: |
+          server: "https://{{ init_ip }}:6443"
+          token: "{{ cluster_token }}"
+          tls-san:
+            - "{{ hostname }}.{{ domain }}"
+          advertise-address: "{{ internal_ip }}"
+          node-ip: "{{ internal_ip }}"
+          flannel-backend: "none"
+          disable-network-policy: true
+          disable-kube-proxy: true
+          service-node-port-range: "80-32767"
+          disable:
+            - traefik
+            - servicelb
+          write-kubeconfig-mode: "0644"
+{% endif %}
+
+    # ---------------------------------------------------------------
+    # k3s クラスター再参加チェックスクリプト
+    # (再起動時にetcdデータが存在すれば接続先を localhost に切り替える)
+    # ---------------------------------------------------------------
+    - path: /opt/bin/k3s-check-join.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          # すでにetcdのデータがあれば、接続先を localhost に書き換える
+          if [ -d "/var/lib/rancher/k3s/server/db/etcd/member" ]; then
+            echo "Already joined cluster. Pointing server to localhost."
+            sed -i 's/^server:.*/server: "https:\/\/127.0.0.1:6443"/' /etc/rancher/k3s/config.yaml
+          fi
+
+    # ---------------------------------------------------------------
+    # SSH ホスト鍵 (Ubuntu と同一鍵 → known_hosts 再登録不要)
+    # ---------------------------------------------------------------
+    - path: /etc/ssh/ssh_host_rsa_key
+      mode: 0600
+      user:
+        id: 0
+      group:
+        id: 0
+      contents:
+        source: "data:;base64,{{ ssh_host_rsa_key_b64 }}"
+    - path: /etc/ssh/ssh_host_rsa_key.pub
+      mode: 0644
+      user:
+        id: 0
+      group:
+        id: 0
+      contents:
+        source: "data:;base64,{{ ssh_host_rsa_pub_b64 }}"
+    - path: /etc/ssh/ssh_host_ecdsa_key
+      mode: 0600
+      user:
+        id: 0
+      group:
+        id: 0
+      contents:
+        source: "data:;base64,{{ ssh_host_ecdsa_key_b64 }}"
+    - path: /etc/ssh/ssh_host_ecdsa_key.pub
+      mode: 0644
+      user:
+        id: 0
+      group:
+        id: 0
+      contents:
+        source: "data:;base64,{{ ssh_host_ecdsa_pub_b64 }}"
+    - path: /etc/ssh/ssh_host_ed25519_key
+      mode: 0600
+      user:
+        id: 0
+      group:
+        id: 0
+      contents:
+        source: "data:;base64,{{ ssh_host_ed25519_key_b64 }}"
+    - path: /etc/ssh/ssh_host_ed25519_key.pub
+      mode: 0644
+      user:
+        id: 0
+      group:
+        id: 0
+      contents:
+        source: "data:;base64,{{ ssh_host_ed25519_pub_b64 }}"
+
+    # ---------------------------------------------------------------
+    # SSH 公開鍵
+    # ---------------------------------------------------------------
+    - path: /home/core/.ssh/authorized_keys
+      mode: 0600
+      user:
+        name: core
+      group:
+        name: core
+      contents:
+        inline: |
+          {{ ssh_public_key }}
+
+    # ---------------------------------------------------------------
+    # Ansible 用 Python3 (Flatcar 4012.0.0+ 公式 sysext で /usr/bin/python3 を提供)
+    # /etc/flatcar/enabled-sysext.conf に 'python' と書くだけで OS 起動時に自動配置される
+    # ---------------------------------------------------------------
+    - path: /etc/flatcar/enabled-sysext.conf
+      mode: 0644
+      contents:
+        inline: |
+          python
+
+    # ---------------------------------------------------------------
+    # containerd ログを JSON で出力するための設定
+    # ---------------------------------------------------------------
+    - path: /etc/containerd/config.toml
+      mode: 0644
+      contents:
+        inline: |
+          version = 2
+          [plugins."io.containerd.grpc.v1.cri".containerd]
+            snapshotter = "overlayfs"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+            runtime_type = "io.containerd.runc.v2"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+            SystemdCgroup = true
+
+    # ---------------------------------------------------------------
+    # LB deregister スクリプト
+    # k3s.service の ExecStopPre から呼ばれ、シャットダウン前に
+    # kubectl cordon でこのノードを LB から除外する
+    # ---------------------------------------------------------------
+    - path: /opt/bin/lb-deregister.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          # lb-deregister.sh: シャットダウン前にこのノードを LB から除外する
+          # k3s.service の ExecStopPre から呼ばれる
+          set -e
+          NODE=$(hostname)
+          KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+          echo "lb-deregister: cordoning node $NODE..."
+          if kubectl --kubeconfig "$KUBECONFIG" cordon "$NODE" 2>/dev/null; then
+            echo "lb-deregister: cordon 成功。lb-controller が LB を更新するまで 20 秒待機..."
+            sleep 10
+            echo "lb-deregister: 完了"
+          else
+            echo "lb-deregister: cordon 失敗 (k3s が未起動の可能性)。スキップ"
+          fi
+
+  links:
+    # k3s.service を multi-user.target で自動起動させるシンボリックリンク
+    - path: /etc/systemd/system/multi-user.target.wants/k3s.service
+      target: /usr/lib/systemd/system/k3s.service
+    # 3. sysext 側のサービスを multi-user.target で起動させるシンボリックリンク
+    #    ssm-register.service, amazon-ssm-agent.service は sysext イメージ内にあるため Ignition 処理時点では
+    #    まだ存在しない。enabled: true は unit ファイルを参照するためエラーになる
+    #    可能性があるので、links で直接シンボリックリンクを作成する。
+    - path: /etc/systemd/system/multi-user.target.wants/ssm-register.service
+      target: /usr/lib/systemd/system/ssm-register.service
+      hard: false
+    - path: /etc/systemd/system/multi-user.target.wants/amazon-ssm-agent.service
+      target: /usr/lib/systemd/system/amazon-ssm-agent.service
+      hard: false
+
+# ---------------------------------------------------------------
+# systemd ユニット
+# ---------------------------------------------------------------
+systemd:
+  units:
+    # k3s サービス dropin
+    # (起動前に config.yaml の接続先を最適化、停止前にノードを cordon)
+    - name: k3s.service
+      dropins:
+        - name: 10-dynamic-server.conf
+          contents: |
+            [Unit]
+            # sysext が有効化されてから k3s を起動する
+            After=systemd-sysext.service
+            Wants=systemd-sysext.service
+            [Service]
+            # K3s が起動する直前にスクリプトを実行して config.yaml を最適化する
+            ExecStartPre=/opt/bin/k3s-check-join.sh
+            # k3s 停止前にこのノードを cordon して lb-controller に LB 除外を促す
+            ExecStopPre=/opt/bin/lb-deregister.sh
+            TimeoutStopSec=60
+
+    # systemd-sysext (sysext イメージを起動時に有効化)
+    - name: systemd-sysext.service
+      enabled: true
+
+    # Flatcar 自動更新 (OS の自動アップデートを有効化)
+    - name: update-engine.service
+      enabled: true
+    - name: locksmithd.service
+      enabled: true
+
+{% if auto_shutdown_at_utc %}
+    # 自動シャットダウン ({{ auto_shutdown_at_utc }} UTC)
+    - name: auto-shutdown.service
+      contents: |
+        [Unit]
+        Description=Automatic shutdown for cost saving
+        After=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/bin/halt -p
+
+    - name: auto-shutdown.timer
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Trigger automatic shutdown at {{ auto_shutdown_at_utc }} UTC daily
+
+        [Timer]
+        OnCalendar=*-*-* {{ auto_shutdown_at_utc }} UTC
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+{% endif %}
+
+# ---------------------------------------------------------------
+# ユーザ設定
+# ---------------------------------------------------------------
+passwd:
+  users:
+    - name: core
+      groups:
+        - sudo
+        - docker
+      ssh_authorized_keys:
+        - "{{ ssh_public_key }}"

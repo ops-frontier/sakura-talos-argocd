@@ -1,0 +1,34 @@
+---
+# ssm_instance_id role – ComputerName (ノード名) から SSM Managed Instance ID を検索する
+#
+# 呼び出し側は `computer_name` を vars として渡すこと。
+# 環境変数の AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY は Switch Only
+# (AssumeRole 専用) キーである前提のため、一時的に AWS_ROLE_ARN のロールを
+# AssumeRole してからオンラインになるまでリトライし、`ssm_instance_id`
+# ファクトを設定する。
+
+- name: Assume AWS IAM role
+  ansible.builtin.include_role:
+    name: aws_assume_role
+  run_once: true
+
+- name: Look up SSM managed instance ID for {{ computer_name }}
+  ansible.builtin.command:
+    cmd: >
+      aws ssm describe-instance-information
+      --filters "Key=PingStatus,Values=Online"
+      --query "InstanceInformationList[?ComputerName=='{{ computer_name }}'].InstanceId"
+      --output text
+  environment: "{{ aws_assumed_env }}"
+  register: _ssm_instance_id_result
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+  retries: 30
+  delay: 10
+  until: _ssm_instance_id_result.stdout | trim != ""
+
+- name: Set ssm_instance_id fact
+  ansible.builtin.set_fact:
+    ssm_instance_id: "{{ _ssm_instance_id_result.stdout | trim }}"
+  run_once: true

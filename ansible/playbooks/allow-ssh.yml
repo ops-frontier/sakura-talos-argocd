@@ -1,0 +1,35 @@
+---
+# allow-ssh.yml – AWS SSM Session Manager 経由で `ssh dis-poc-sv1` 等の接続を
+# 可能にし、k3s API (6443) 用のポートフォワードセッションをバックグラウンドで起動する
+#
+# パケットフィルタへの SSH 許可ルール追加は不要 (SSM Agent がアウトバウンドで
+# AWS 側に接続するため、インバウンドポートを開放する必要がない)
+- name: Allow SSH access via SSM
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - terraform_outputs
+
+  tasks:
+    - name: Remove stale known_hosts entries
+      ansible.builtin.include_role:
+        name: update_known_hosts
+      vars:
+        target_host_name: "{{ item }}"
+      loop: "{{ tf_outputs.node_public_ips.value.keys() | list }}"
+
+    - name: Update ~/.ssh/config for SSM access
+      ansible.builtin.include_role:
+        name: setup_ssh_config
+
+    - name: Record sv1 name
+      ansible.builtin.set_fact:
+        sv1_name: "{{ tf_outputs.node_public_ips.value.keys() | sort | first }}"
+
+    - name: Start k3s API port-forward tunnel via SSM (background)
+      ansible.builtin.include_role:
+        name: ssm_tunnel
+        tasks_from: start
+      vars:
+        computer_name: "{{ sv1_name }}"
+

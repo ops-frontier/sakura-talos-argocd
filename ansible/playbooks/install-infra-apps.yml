@@ -1,0 +1,217 @@
+---
+# install-infra-apps.yml – ArgoCD ブートストラップ (install-charts に相当)
+#
+# sv1 への接続・k3s API (6443) へのアクセスはいずれも AWS SSM Session Manager
+# 経由で行う (パケットフィルタへの SSH 許可ルール追加は不要)。
+- name: Prepare facts and SSH
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - terraform_outputs
+
+  tasks:
+    - name: Record sv1 name
+      ansible.builtin.set_fact:
+        sv1_name: "{{ tf_outputs.node_public_ips.value.keys() | sort | first }}"
+
+    - name: Add sv1 host dynamically (SSM 経由で接続)
+      ansible.builtin.add_host:
+        name: "{{ sv1_name }}"
+        groups: _sv1
+        tf_outputs: "{{ tf_outputs }}"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=accept-new
+          -o UserKnownHostsFile={{ known_hosts_path }}
+          -o ConnectTimeout=15
+          -o ServerAliveInterval=30
+          -o ServerAliveCountMax=10
+          -o BatchMode=yes
+          -o ProxyCommand="{{ ssm_ssh_proxy_script }} %h %p"
+
+    - name: Deploy SSM SSH ProxyCommand script
+      ansible.builtin.include_role:
+        name: setup_ssh_config
+
+- name: Apply ArgoCD bootstrap via k3s API tunnel
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _local_kubeconfig: /tmp/k3s-kubeconfig.yaml
+  module_defaults:
+    kubernetes.core.k8s:
+      kubeconfig: /tmp/k3s-kubeconfig.yaml
+    kubernetes.core.k8s_info:
+      kubeconfig: /tmp/k3s-kubeconfig.yaml
+    kubernetes.core.helm:
+      kubeconfig: /tmp/k3s-kubeconfig.yaml
+  tasks:
+    - name: Wait for sv1 to be online in SSM
+      ansible.builtin.include_role:
+        name: ssm_instance_id
+      vars:
+        computer_name: "{{ sv1_name }}"
+
+    - block:
+        - name: Remove stale known_hosts entry for sv1
+          ansible.builtin.include_role:
+            name: update_known_hosts
+          vars:
+            target_host_name: "{{ sv1_name }}"
+
+        # SSM Session Manager 経由の SSH は長時間の接続維持中に切断されることが
+        # あるため (mux_client_request_session: Broken pipe 等)、接続をリセット
+        # してから 1 回だけ再試行する。
+        - name: Wait for k3s kubeconfig and fetch it from sv1
+          block:
+            - name: Wait for k3s kubeconfig to exist on sv1
+              ansible.builtin.wait_for:
+                path: /etc/rancher/k3s/k3s.yaml
+                timeout: 300
+              delegate_to: "{{ sv1_name }}"
+              ignore_unreachable: true
+
+            - name: Fetch k3s kubeconfig from sv1
+              ansible.builtin.slurp:
+                src: /etc/rancher/k3s/k3s.yaml
+              delegate_to: "{{ sv1_name }}"
+              register: _k3s_kubeconfig
+              ignore_unreachable: true
+          rescue:
+            - name: Reset stale SSM SSH connection to sv1
+              ansible.builtin.meta: reset_connection
+              delegate_to: "{{ sv1_name }}"
+
+            - name: Wait for k3s kubeconfig to exist on sv1 (retry after reconnect)
+              ansible.builtin.wait_for:
+                path: /etc/rancher/k3s/k3s.yaml
+                timeout: 300
+              delegate_to: "{{ sv1_name }}"
+
+            - name: Fetch k3s kubeconfig from sv1 (retry after reconnect)
+              ansible.builtin.slurp:
+                src: /etc/rancher/k3s/k3s.yaml
+              delegate_to: "{{ sv1_name }}"
+              register: _k3s_kubeconfig
+
+        - name: Write k3s kubeconfig locally
+          ansible.builtin.copy:
+            content: "{{ _k3s_kubeconfig.content | b64decode }}"
+            dest: "{{ _local_kubeconfig }}"
+            mode: '0600'
+
+        - name: Start k3s API port-forward tunnel via SSM (background)
+          ansible.builtin.include_role:
+            name: ssm_tunnel
+            tasks_from: start
+          vars:
+            computer_name: "{{ sv1_name }}"
+
+        - name: Add Cilium Helm repository
+          kubernetes.core.helm_repository:
+            name: cilium
+            repo_url: https://helm.cilium.io/
+
+        - name: Install Cilium CNI via Helm
+          kubernetes.core.helm:
+            name: cilium
+            chart_ref: cilium/cilium
+            chart_version: "~1.16.0"
+            release_namespace: kube-system
+            create_namespace: false
+            values:
+              kubeProxyReplacement: "true"
+              k8sServiceHost: "{{ tf_outputs.node_private_ips.value[sv1_name] }}"
+              k8sServicePort: "6443"
+              operator:
+                replicas: 1
+              ipam:
+                mode: kubernetes
+              socketLB:
+                enabled: true
+              localRedirectPolicy: true
+              hubble:
+                relay:
+                  enabled: true
+                ui:
+                  enabled: true
+
+        - name: Wait for Cilium DaemonSet to be ready
+          kubernetes.core.k8s_info:
+            kind: DaemonSet
+            name: cilium
+            namespace: kube-system
+          register: _cilium_ds
+          until: >
+            (_cilium_ds.resources | default([])) | length > 0 and
+            (_cilium_ds.resources[0].status.numberReady | default(0)) ==
+            (_cilium_ds.resources[0].status.desiredNumberScheduled | default(-1))
+          retries: 60
+          delay: 10
+          failed_when: false
+
+        # Cilium 待機は長時間かかるため、SSM ポートフォワードセッションが
+        # 切断されていないか確認し、切れていれば再接続する (念のための保険)
+        - name: Re-check k3s API tunnel after long-running Cilium wait
+          ansible.builtin.include_role:
+            name: ssm_tunnel
+            tasks_from: start
+          vars:
+            computer_name: "{{ sv1_name }}"
+
+        - name: Create ArgoCD namespace
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: argocd
+
+        # NOTE: kubernetes.core.k8s は使用不可
+        # ArgoCD の install.yaml はクラスタースコープ (ClusterRole 等) と
+        # 名前空間スコープ (ServiceAccount 等) のリソースが混在する大規模マルチドキュメント YAML。
+        # server_side_apply: true と definition: (list) を組み合わせると
+        #   "Failed to apply object: Namespace is required for v1.ServiceAccount"
+        # というエラーが発生し適用に失敗する。
+        # これは kubernetes.core.k8s がリスト内の各リソースを個別に処理する際に
+        # 名前空間スコープのリソースの namespace 解決に失敗する既知の挙動による。
+        # (参考: https://github.com/ansible-collections/kubernetes.core/issues/42
+        #        https://github.com/ansible-collections/kubernetes.core/issues/374)
+        # kubectl apply はこのような複雑なマニフェストを正しく処理できるため
+        # ここでは kubectl を直接使用する。
+        - name: Install ArgoCD via kubectl
+          ansible.builtin.command:
+            cmd: >
+              kubectl apply --server-side --force-conflicts -n argocd
+              -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+          environment:
+            KUBECONFIG: "{{ _local_kubeconfig }}"
+          register: _argocd_install_result
+          until: _argocd_install_result is not failed
+          retries: 3
+          delay: 15
+          changed_when: "'configured' in _argocd_install_result.stdout or 'created' in _argocd_install_result.stdout"
+
+        - name: Wait for ArgoCD to be ready
+          ansible.builtin.include_role:
+            name: wait_for_argocd
+
+        - name: Push infra-apps to OCI registry
+          ansible.builtin.include_role:
+            name: push_infra_apps
+
+        - name: Register ArgoCD OCI registry secret and app-of-apps
+          ansible.builtin.include_role:
+            name: register_argocd_apps
+
+        - name: Apply ArgoCD manifests
+          ansible.builtin.include_role:
+            name: argocd_bootstrap
+
+      always:
+        # k3s API 用の SSM ポートフォワードセッションは deny-ssh.yml が
+        # 停止するため、ここでは終了させずそのまま残す。
+        - name: Remove local kubeconfig
+          ansible.builtin.file:
+            path: "{{ _local_kubeconfig }}"
+            state: absent
