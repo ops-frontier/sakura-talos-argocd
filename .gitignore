@@ -5,6 +5,7 @@ terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
 terraform/terraform.tfvars
 terraform/*.tfvars
+terraform/.lb_router_id
 
 # SSH 鍵 (Terraform が生成)
 .ssh/

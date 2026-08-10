@@ -1,44 +1,10 @@
 # ---------------------------------------------------------------
 # Cilium (CNI + kube-proxy replacement + 割り当てIPインターセプト)
-# 注意: 初回ブートストラップは butane/node.yaml.tpl の install-argocd.sh で実施済み。
-# ArgoCD は以後のアップデート・設定変更を管理する。
+# 注意: Cilium のインストール・アップグレードは ArgoCD ではなく
+# Sidero Talos Omni のクラスタ定義 (terraform/omni.tf の cni ブロック) が
+# ノード起動時に自動的に行う。ここでは Cilium 自体の Application は
+# 定義しない (cilium-assigned-ips.yaml.j2 で固定IP割り当てのみ管理する)。
 # ---------------------------------------------------------------
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: cilium
-  namespace: argocd
-spec:
-  project: infra
-  source:
-    repoURL: https://helm.cilium.io
-    chart: cilium
-    targetRevision: "1.16.*"
-    helm:
-      values: |
-        kubeProxyReplacement: "true"
-        k8sServiceHost: "{{ init_internal_ip }}"
-        k8sServicePort: "6443"
-        operator:
-          replicas: 1
-        ipam:
-          mode: kubernetes
-        # socketLB: BPF ソケットレベル LB (kube-proxy replacement の一般機能)
-        socketLB:
-          enabled: true
-        hubble:
-          relay:
-            enabled: true
-          ui:
-            enabled: true
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: kube-system
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
----
 # ---------------------------------------------------------------
 # Traefik (Ingress Controller + L7 TLS 終端)
 # ---------------------------------------------------------------
@@ -213,7 +179,7 @@ spec:
               inputs:
                 - parse_json_logs
               endpoint: "http://10.43.1.1:4000"
-              table: k3s_logs
+              table: k8s_logs
               dbname: public
   destination:
     server: https://kubernetes.default.svc
@@ -314,12 +280,12 @@ spec:
                   path: /var/lib/grafana/dashboards/default
         dashboards:
           default:
-            k3s-logs:
+            k8s-logs:
               json: |-
                 {
                   "id": null,
-                  "uid": "k3s-logs",
-                  "title": "k3s Logs",
+                  "uid": "k8s-logs",
+                  "title": "k8s Logs",
                   "schemaVersion": 38,
                   "version": 1,
                   "refresh": "30s",
@@ -333,7 +299,7 @@ spec:
                       "datasource": "GreptimeDB",
                       "targets": [
                         {
-                          "rawSql": "SELECT date_trunc('minute', greptime_timestamp) AS time, `kubernetes.pod_namespace` AS metric, COUNT(*) AS value FROM k3s_logs WHERE $__timeFilter(greptime_timestamp) GROUP BY 1, 2 ORDER BY 1 ASC",
+                          "rawSql": "SELECT date_trunc('minute', greptime_timestamp) AS time, `kubernetes.pod_namespace` AS metric, COUNT(*) AS value FROM k8s_logs WHERE $__timeFilter(greptime_timestamp) GROUP BY 1, 2 ORDER BY 1 ASC",
                           "format": "time_series",
                           "refId": "A"
                         }

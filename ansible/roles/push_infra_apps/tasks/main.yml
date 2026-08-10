@@ -99,10 +99,10 @@
 - name: Login to OCI registry
   ansible.builtin.command:
     cmd: >
-      helm registry login {{ tf_outputs.container_registry_fqdn.value }}
-      --username {{ tf_outputs.container_registry_push_user.value }}
+      helm registry login {{ container_registry_fqdn }}
+      --username {{ container_registry_user }}
       --password-stdin
-    stdin: "{{ tf_outputs.container_registry_push_password.value }}"
+    stdin: "{{ container_registry_password }}"
   changed_when: true
   no_log: true
 
@@ -111,7 +111,7 @@
     cmd: >
       helm push
       {{ _chart_tmpdir.path }}/{{ infra_apps_chart_name }}-{{ infra_apps_chart_version }}.tgz
-      oci://{{ tf_outputs.container_registry_fqdn.value }}
+      oci://{{ container_registry_fqdn }}
   changed_when: true
 
 - name: Cleanup chart temp directory
@@ -123,7 +123,7 @@
   ansible.builtin.debug:
     msg: >-
       chart push 完了:
-      oci://{{ tf_outputs.container_registry_fqdn.value }}/{{ infra_apps_chart_name }}:{{ infra_apps_chart_version }}
+      oci://{{ container_registry_fqdn }}/{{ infra_apps_chart_name }}:{{ infra_apps_chart_version }}
 
 # ── lb-controller コンテナイメージのビルド・プッシュ (crane 使用) ─
 # Docker デーモン不要。crane (go-containerregistry) で OCI イメージを構築する。
@@ -133,10 +133,10 @@
   ansible.builtin.command:
     cmd: >
       crane auth login
-      {{ tf_outputs.container_registry_fqdn.value }}
-      -u {{ tf_outputs.container_registry_push_user.value }}
+      {{ container_registry_fqdn }}
+      -u {{ container_registry_user }}
       --password-stdin
-    stdin: "{{ tf_outputs.container_registry_push_password.value }}"
+    stdin: "{{ container_registry_password }}"
   changed_when: true
   no_log: true
 
@@ -187,7 +187,7 @@
       --base python:3.14-slim
       --platform linux/amd64
       --new_layer /tmp/lb-controller-layer.tar.gz
-      --new_tag {{ tf_outputs.container_registry_fqdn.value }}/lb-controller:{{ lb_controller_version }}
+      --new_tag {{ container_registry_fqdn }}/lb-controller:{{ lb_controller_version }}
   changed_when: true
 
 - name: Set image workdir, entrypoint and PYTHONPATH (crane mutate)
@@ -198,7 +198,7 @@
       --entrypoint "python,-u,controller.py"
       --env "PYTHONPATH=/app/lib"
       --user nobody
-      {{ tf_outputs.container_registry_fqdn.value }}/lb-controller:{{ lb_controller_version }}
+      {{ container_registry_fqdn }}/lb-controller:{{ lb_controller_version }}
   changed_when: true
 
 - name: Cleanup lb-controller build artifacts
@@ -213,4 +213,4 @@
   ansible.builtin.debug:
     msg: >-
       lb-controller image push 完了:
-      {{ tf_outputs.container_registry_fqdn.value }}/lb-controller:{{ lb_controller_version }}
+      {{ container_registry_fqdn }}/lb-controller:{{ lb_controller_version }}

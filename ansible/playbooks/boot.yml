@@ -1,5 +1,5 @@
 ---
-# boot.yml – Flatcar Linux をインストールして起動する (全サーバ並列) → 完了後に SSH 許可を解除
+# boot.yml – Talos Linux をインストールして起動する (全サーバ並列) → 完了後に SSH 許可を解除
 - name: Prepare facts on localhost
   hosts: localhost
   gather_facts: false
@@ -9,6 +9,36 @@
     - packet_filter_ssh_allow
 
   tasks:
+    # omni_join_config が provider (v0.1.0-alpha.3) で使えないため、
+    # Talos インストールイメージは terraform ではなく omnictl で直接取得する。
+    # ノードごとの個別ダウンロードは boot_node role (ステップ5) で行う。
+    - name: Ensure rendered directory exists
+      ansible.builtin.file:
+        path: "{{ rendered_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Check existing Omni installation media presets
+      ansible.builtin.command:
+        cmd: omnictl media preset list
+      environment:
+        OMNI_ENDPOINT: "{{ tf_outputs.omni_endpoint.value }}"
+        OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') }}"
+      register: _media_preset_list
+      changed_when: false
+
+    - name: Create Omni installation media preset for Talos install image
+      ansible.builtin.command:
+        cmd: >
+          omnictl media preset create talos-install
+          --arch amd64
+          --talos-version {{ talos_version }}
+          --initial-labels sakura.io/cluster={{ tf_outputs.omni_cluster_id.value }}
+      environment:
+        OMNI_ENDPOINT: "{{ tf_outputs.omni_endpoint.value }}"
+        OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') }}"
+      when: "'talos-install' not in _media_preset_list.stdout"
+
     - name: Add server hosts dynamically
       ansible.builtin.add_host:
         name: "{{ item.key }}"
@@ -18,14 +48,41 @@
         my_ip: "{{ my_ip }}"
       loop: "{{ tf_outputs.node_public_ips.value | dict2items }}"
 
-- name: Boot each node (Flatcar install)
+- name: Boot each node (Talos install)
   hosts: _boot_servers
   gather_facts: false
   strategy: free
   roles:
     - boot_node
 
-- name: Close SSH access after Flatcar installation
+- name: Assign joined nodes to the Omni cluster
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - terraform_outputs
+  tasks:
+    - name: Apply Terraform after nodes join Omni
+      community.general.terraform:
+        project_path: "{{ terraform_dir }}"
+        state: present
+        force_init: true
+
+    - name: Wait for the Omni cluster to be ready
+      ansible.builtin.command:
+        cmd: >
+          omnictl get clusterstatus
+          {{ tf_outputs.omni_cluster_id.value }}
+          -o jsonpath='{.spec.ready}'
+      environment:
+        OMNI_ENDPOINT: "{{ tf_outputs.omni_endpoint.value }}"
+        OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') }}"
+      register: _omni_cluster_status
+      until: _omni_cluster_status.rc == 0 and 'true' in _omni_cluster_status.stdout
+      retries: 60
+      delay: 10
+      changed_when: false
+
+- name: Close SSH access after Talos installation
   hosts: localhost
   gather_facts: false
   roles:

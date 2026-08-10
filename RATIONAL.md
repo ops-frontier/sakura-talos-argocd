@@ -81,7 +81,8 @@ Tetragon には有償版の Isovalent Enterprise があり、これを導入す�
 
 ## コンテナレジストリ
 
-Docker Hub などの公式イメージ（nginx:latest や node:alpine など）をそのままデプロイするのではなく、一旦手元で Pull し、さくらのクラウドのコンテナレジストリに Push してから本番環境等で使用する
+Docker Hub などの公式イメージ（nginx:latest や node:alpine など）をそのままデプロイするのではなく、一旦手元で Pull し、さくらのクラウドのコンテナレジストリに Push してから本番環境等で使用する。
+ただし、さくらのクラウドのコンテナレジストリは一度作成すると削除しても1ヶ月分が請求されるため、IaC では構築せず、既存のものを利用することとする。
 
 ### 1. サプライチェーンリスクの低減（イメージの不変性の担保）
 パブリックレジストリのタグ（例: latest や 1.0.0）は、提供者が上書きすることが可能です。もし提供者のアカウントが乗っ取られ、悪意のあるコードが仕込まれた同名のイメージで上書きされた場合、直接Pullしていると次回デプロイ時に自動的に汚染されたイメージを取り込んでしまいます。
@@ -138,12 +139,12 @@ CNI には高機能かつ高性能であると言われている Cilium を使�
 - ISOイメージからの起動後に自動でコマンド入力することはできない
 - グローバルIPはサーバ作成時に自動で付与されるが、ルータを経由する場合は DHCP は使用できない。
 
-## リモートアクセス (AWS SSM Agent)
+## リモートアクセス (SideroLink)
 
-運用中のサーバへの SSH 接続や k3s API (6443) へのアクセスには、パケットフィルタで SSH ポートを開閉する方式ではなく、AWS SSM Agent (Systems Manager Session Manager) 経由の接続を採用する。
+運用中のサーバへの SSH 接続や k8s API へのアクセスは行わず、SideroLink 経由で Sidero Talos Omni による管理のみを行う。
 
-- 従来方式では作業のたびに開発環境のグローバル IP をパケットフィルタに許可ルールとして追加する必要があり、Codespaces の IP が変わるたびに手動対応が発生するうえ、許可ルールの追加漏れ・削除漏れがセキュリティリスクとなる
-- SSM Agent はサーバ側からアウトバウンドで AWS 側に接続しにいくため、パブリック IP 側でポートを一切開放せずに SSH や TCP ポートフォワードを実現できる。これによりパケットフィルタは常時 HTTP/HTTPS のみ許可という最小構成を維持できる
-- Terraform で発行した SSM Hybrid Activation (Activation ID / Code) を Butane 経由で Ignition に埋め込み、Flatcar 初回起動時に sysext の SSM Agent が自動登録される
-- Codespaces には AssumeRole 以外の権限を持たない IAM ユーザー（Switch Only キー）のみを保存し、実際に SSM を操作する際はロールを一時的に AssumeRole する。これにより Codespaces に保存する長期的な認証情報の権限を最小化する
-- Ubuntu ブートストラップディスクの段階（`build-infra` / `boot` による flatcar-install 実行時）は Flatcar 上の SSM Agent がまだ存在しないため、この間だけは従来どおり開発環境の IP に対するパケットフィルタの SSH 許可と鍵ペアによる接続を使用する
+- Talos Linux には sshd が存在せず API 操作のみが可能なため、そもそも SSH 接続という手段自体が存在しない
+- SideroLink はノード側からアウトバウンドで Omni に接続しにいくため、パブリック IP 側でポートを一切開放せずにマシン管理・kubeconfig 取得を実現できる。これによりパケットフィルタは常時 HTTP/HTTPS のみ許可という最小構成を維持できる
+- ノードは起動時に Omni のクラスタ定義から生成されたインストールイメージ (SideroLink Join Config を含む) から起動することで、初回起動時から自動的に Omni へ接続する
+- クラスタの kubeconfig 取得や状態確認は Omni のサービスアカウントキーを用いて `omnictl` から行う
+- Ubuntu ブートストラップディスクの段階（`build-infra` / `boot` による talosctl image (Imager) のインストールイメージ書き込み時）は Talos がまだ起動していないため、この間だけは開発環境の IP に対するパケットフィルタの SSH 許可と鍵ペアによる接続を使用する

@@ -1,12 +1,11 @@
 ---
 # register_argocd_apps role – OCI レジストリ secret と app-of-apps Application を ArgoCD に登録する
-# kubernetes.core モジュールで localhost から k3s API に接続する
-# (kubeconfig: /tmp/k3s-kubeconfig.yaml)
+# kubernetes.core モジュールで localhost から Kubernetes API に接続する
+# (kubeconfig は呼び出し元の module_defaults で指定される)
 # push_infra_apps role の後に実行すること
 
 - name: Apply OCI registry secret (argocd)
   kubernetes.core.k8s:
-    kubeconfig: /tmp/k3s-kubeconfig.yaml
     state: present
     definition:
       apiVersion: v1
@@ -20,15 +19,14 @@
       stringData:
         name: sakura-container-registry
         type: helm
-        url: "{{ tf_outputs.container_registry_fqdn.value }}"
-        username: "{{ tf_outputs.container_registry_pull_user.value }}"
-        password: "{{ tf_outputs.container_registry_pull_password.value }}"
+        url: "{{ container_registry_fqdn }}"
+        username: "{{ container_registry_user }}"
+        password: "{{ container_registry_password }}"
         enableOCI: "true"
   no_log: true
 
 - name: Apply app-of-apps Application
   kubernetes.core.k8s:
-    kubeconfig: /tmp/k3s-kubeconfig.yaml
     state: present
     definition:
       apiVersion: argoproj.io/v1alpha1
@@ -41,7 +39,7 @@
       spec:
         project: infra
         source:
-          repoURL: "{{ tf_outputs.container_registry_fqdn.value }}"
+          repoURL: "{{ container_registry_fqdn }}"
           chart: "{{ infra_apps_chart_name }}"
           targetRevision: "{{ infra_apps_chart_version }}"
         destination:
@@ -56,4 +54,4 @@
   ansible.builtin.debug:
     msg: >-
       app-of-apps 登録完了:
-      oci://{{ tf_outputs.container_registry_fqdn.value }}/{{ infra_apps_chart_name }}:{{ infra_apps_chart_version }}
+      oci://{{ container_registry_fqdn }}/{{ infra_apps_chart_name }}:{{ infra_apps_chart_version }}

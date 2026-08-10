@@ -10,4 +10,4 @@ license:
 tags:
   - sakura
   - cloud
-repository: https://github.com/chip-in-v2/sakura-flatcar-k3s-argocd-iac
+repository: https://github.com/ops-frontier/sakura-talos-argocd

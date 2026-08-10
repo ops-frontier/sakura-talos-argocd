@@ -9,16 +9,16 @@
 - 3台のサーバでクラスタを構成する
 - 3台のサーバをコントロールプレーン兼ワーカとしてセットアップする
 - クラスタのサーバ間通信のための内部ネットワークを運用する
-- k8s に Argo CD を入れて、 Helm チャートを管理する
+- k8s は Talos Linux に組み込みのため別途インストールしない。k8s に Argo CD を入れて、 Helm チャートを管理する
 - ロードバランサを使用してグローバルIPで着信した HTTP リクエストをサービスが動作しているワーカに振り分ける
 - ロードバランサの設定をコントローラから行うさくらのクラウド用 CCM を開発してインストールする
 - eBPF として Tetragon を導入する
 - ログの解析のために vector, greptimeDB, grafana を導入する
-- サーバへの SSH 接続や k8s API へのアクセスは、パケットフィルタでポートを開放せず AWS SSM Agent (Systems Manager Session Manager) 経由で行う
+- サーバはパケットフィルタで SSH ポートを開放しない。ノードは起動時に SideroLink を使って Sidero Talos Omni へ能動的に接続し、Omni 経由でのみ管理する (SSH 接続は一切行わない)
 
 ## 構築ツール
 
-IaC のツールとしては、Terraform, Ignition(Butane), Ansible を使用する。
+IaC のツールとしては、Terraform, Ansible を使用する。ディスクイメージの作成には talosctl (Imager) を使用する。
 
 ### パラメータ
 
@@ -26,10 +26,10 @@ IaC のツールとしては、Terraform, Ignition(Butane), Ansible を使用す
 
 |環境変数名|意味|例|デフォルト/必須|
 |--|--|--|--|
-|AWS_ACCESS_KEY_ID|SSM Agent 登録・操作用に AssumeRole する IAM ユーザー (Switch Only) のアクセスキー|AKIAX..X14|必須|
-|AWS_SECRET_ACCESS_KEY|上記アクセスキーのシークレット|23DF..X14|必須|
-|AWS_ROLE_ARN|SSM Agent のアクティベーション発行や Session Manager 操作のために AssumeRole するロールの ARN|arn:aws:iam::123456789012:role/SSMAgentProvisioner|必須|
-|AWS_REGION|SSM Agent を登録する AWS リージョン|ap-northeast-1|必須|
+|OMNI_ENDPOINT|Sidero Talos Omni のエンドポイント URL|https://ops-frontier.omni.siderolabs.io|必須|
+|OMNI_SERVICE_ACCOUNT_KEY|Sidero Talos Omni のサービスアカウントキー (Terraform provider / omnictl 認証用)|eyJ..X14|必須|
+|TALOS_VERSION|Talos Linux のバージョン|v1.9.0|v1.9.0|
+|KUBERNETES_VERSION|Talos に組み込む Kubernetes のバージョン|v1.31.1|v1.31.1|
 |SAKURA_ACCESS_TOKEN|さくらのクラウドのAPIキーのアクセストークン|23DF..X14|必須|
 |SAKURA_ACCESS_TOKEN_SECRET|さくらのクラウドのAPIキーのアクセストークンのシークレット|23DF..X14|必須|
 |CLOUDFLARE_ACCOUNT_ID|Cloudflare のアカウントID|be591f7..c14|必須|
@@ -48,6 +48,9 @@ IaC のツールとしては、Terraform, Ignition(Butane), Ansible を使用す
 |GH_CLIENT_ID_ARGOCD|Github ClientID ArgoCD用||必須|
 |GH_CLIENT_SECRET_ARGOCD|Github Secret ArgoCD用||必須|
 |AUTO_SHUTDOWN_AT_UTC|毎日自動シャットダウンする時刻 (UTC)。systemd OnCalendar 形式 (例: `11:00:00` = 20:00 JST)。未設定の場合は自動シャットダウンなし。|11:00:00|なし|
+|CONTAINER_REGISTRY_FQDN|組み込みチャート/イメージを push・pull するコンテナレジストリの FQDN|registry.example.com|必須|
+|CONTAINER_REGISTRY_USER|コンテナレジストリのユーザID|k8s-user|必須|
+|CONTAINER_REGISTRY_PASSWORD|コンテナレジストリのパスワード|xxxxxxxx|必須|
 
 なお、環境変数は CodeSpaces から設定できるようにするため、大文字でなければならない。terraform で利用する変数については TF_VAR_ で始まる環境変数に  postCreateCommand で転記する。
 
@@ -55,41 +58,42 @@ IaC のツールとしては、Terraform, Ignition(Butane), Ansible を使用す
 
 terraform でサーバを3台を SAKURA_REGION で指定されたリージョンに構築する。各サーバには以下の2枚のディスクを接続する。
 
-- **ブートストラップディスク (20GB)**: Ubuntu 22.04 LTS パブリックアーカイブから作成。ディスク修正 API でグローバル IP と SSH 公開鍵を設定して起動する。Flatcar のインストール作業環境として使用する。
-- **ターゲットディスク (40GB)**: 未フォーマットの SSD。`flatcar-install` で Flatcar Container Linux をインストールする先。
+- **ブートストラップディスク (20GB)**: Ubuntu 22.04 LTS パブリックアーカイブから作成。ディスク修正 API でグローバル IP と SSH 公開鍵を設定して起動する。Talos Linux のインストール作業環境として使用する。
+- **ターゲットディスク (40GB)**: 未フォーマットの SSD。talosctl (Imager) で生成した Talos Linux のディスクイメージを `dd` で書き込む先。
 
-さくらのクラウドの API でディスクの順序を入れ替えることで、Ubuntu と Flatcar のどちらから起動するかを選択できる。これにより、サーバを再構築せずに Ignition 設定をデバッグできる。
+さくらのクラウドの API でディスクの順序を入れ替えることで、Ubuntu と Talos のどちらから起動するかを選択できる。これにより、サーバを再構築せずにインストール処理をデバッグできる。
 
 セキュリティ向上のため、さくらのクラウドのパケットフィルタを構成し、サーバのパブリックIPには**ポート 80 (HTTP) と 443 (HTTPS) のみ**オープンにするようにアクセス制限をかける。SSH接続はデフォルトでは許可されない。
 
 ### ssh
 
-ssh のペア鍵は terraform でオンデマンドに生成する。Ubuntu ブートストラップディスクへのインストール作業時 (`build-infra` / `boot`) は、まだ Flatcar 上で SSM Agent が動作していないため、以下の手順で従来どおり鍵ペアによる SSH 接続を行う。
+ssh のペア鍵は terraform でオンデマンドに生成する。Ubuntu ブートストラップディスクへのインストール作業時 (`build-infra` / `boot`) のみ、以下の手順で鍵ペアによる SSH 接続を行う。
 
 1. 開発環境からインターネットに接続するときのグローバルIPを調べる
 2. パケットフィルタで 22 番ポートの tcp 接続を開発環境の IP のみ許可する
-3. `~/.ssh/config` を生成し、サーバ名でアクセスできるようにする
+3. Ubuntu ブートストラップディスクに対して SSH 接続し、Talos Linux のディスクイメージを書き込む
 
-Flatcar 起動後は SSM Agent がサーバ上で稼働するため、以降のサーバへの SSH 接続や k8s API (6443) へのアクセスは AWS SSM Session Manager 経由で行う (詳細は [SSM-AGENT.md](./SSM-AGENT.md) を参照)。`~/.ssh/config` の `ProxyCommand` が SSM 経由の接続をトンネルするため、パケットフィルタで SSH 用ポートを開放する必要がない。
+Talos Linux には sshd が存在せず、SSH 接続は一切行わない。Talos 起動後は SideroLink 経由で Sidero Talos Omni に能動的に接続し、以降のクラスタ操作 (kubeconfig の取得、状態確認など) はすべて Omni の管理 API (`omnictl`) 経由で行う (詳細は [TALOS.md](./TALOS.md) を参照)。ブートストラップ作業完了後はパケットフィルタの SSH 許可ルールを解除するため、恒常的に SSH 用ポートを開放する必要はない。
 
 config では `${SAKURA_LABEL_PREFIX}-sv1`, `${SAKURA_LABEL_PREFIX}-sv2`, `${SAKURA_LABEL_PREFIX}-sv3` のホスト名でアクセスできるようにする。
 
 ### 初期インストール
 
-初期インストールは Flatcar Container Linux でデフォルトでサポートされている Ignition を使用する。Ignition の内容については Butane を使用して [YAML](./butane/node.yaml.j2) で記述する。`boot` がテンプレートから各サーバ用の Ignition ファイルを生成し、Ubuntu 上で `flatcar-install` を実行してターゲットディスクにインストールする。インストール完了後、ディスク順序を入れ替えて Flatcar から起動する。
+初期インストールは talosctl (Imager) を使用する。Sidero Talos Omni のクラスタ定義から、SideroLink の Join Config を組み込んだ Talos Linux のディスクイメージ (raw) を生成する。`boot` が Ubuntu 上でこのイメージをダウンロードし、ターゲットディスクに `dd` で書き込む。書き込み完了後、ディスク順序を入れ替えて Talos Linux から起動する。Talos は起動時に SideroLink 経由で能動的に Omni へ接続し、マシン設定を取得してクラスタに参加する。
 
 ### ミドルウェア
 
-サーバに k8s を systemd 管理のサービスとしてインストールする。k8s でクラスタを構成し、コンテナのオーケストレーションを行う。
+サーバに Talos Linux 組み込みの k8s でクラスタを構成し、コンテナのオーケストレーションを行う。
 
 - 全サーバをコントロールプレーン兼ワーカノードとする
 - Embeded DB を全サーバにインストールしクラスタ化する
+- CNI には Cilium を使用する。Cilium と Argo CD は Sidero Talos Omni のクラスタ定義 (CNI 設定 / inline manifest) によりノード起動時に自動的にデプロイされる
 - k8s のHelmチャート管理には Argo CD を使用する
 
 ```mermaid
 graph TD
-  subgraph Systemd [Systemd]
-    k8s[k8s.service]
+  subgraph talos-node [Talos Linux Node]
+    k8s[Kubernetes<br>built-in]
   end
 
   subgraph k8s-block [k8s Jobs]
@@ -116,11 +120,9 @@ graph TD
 |コマンド|説明|playbook パス|
 |--|--|--|
 |build-infra|さくらのクラウドのネットワークとサーバを構築|ansible/playbooks/build-infra.yml|
-|boot|flatcar linux と k8s をインストール|ansible/playbooks/boot.yml|
+|boot|Talos Linux をインストール (k8s は Talos に組み込みのため別途インストール不要)|ansible/playbooks/boot.yml|
 |install-charts|インフラ系のリソースを k8s に組み込む|ansible/playbooks/install-infra-apps.yml|
 |push-infra-apps|インフラ系のアプリの Helmチャートをコンテナレジストリに Push|ansible/playbooks/push-infra-apps.yml|
-|allow-ssh|SSM Session Manager 経由の k8s API (6443) 用ポートフォワードをバックグラウンドで開始する|ansible/playbooks/allow-ssh.yml|
-|deny-ssh|allow-ssh で開始した SSM ポートフォワードセッションを停止する|ansible/playbooks/deny-ssh.yml|
 |destroy|さくらのクラウドのネットワークとサーバを削除|ansible/playbooks/destroy.yml|
 |build-all|build-infra, boot, install-infra-apps を順に実行する|ansible/playbooks/build-all.yml|
 |shutdown-servers|サーバをすべてシャットダウンする|ansible/playbooks/shutdown-servers.yml|
@@ -129,9 +131,8 @@ graph TD
 ### Helmチャート管理
 
 Argo CD を導入して Helm チャートを管理する。 Helm チャートはインフラ層には稼働監視と eBPF が組み込みチャートとしてインストールされる。
-組み込みチャートはさくらインターネットのコンテナレジストリに登録される。チャート登録用のコンテナレジストリは terraform によって作成される。
-コンテナレジストリのユーザも terrafom によって作成される。
-Argo CD を動作させる前に稼働監視とeBPF のチャートをビルドし、コンテナレジストリに push しておく。ArgoCDにはコンテナレジストリのタグを登録する。登録後 OCI でチャートを pull して初期化する。
+組み込みチャートは外部のコンテナレジストリに登録される。コンテナレジストリは terraform では構築せず、`CONTAINER_REGISTRY_FQDN` / `CONTAINER_REGISTRY_USER` / `CONTAINER_REGISTRY_PASSWORD` の環境変数で接続先とユーザを指定する。
+Argo CD (Omni により自動デプロイ済み) に対して、稼働監視とeBPF のチャートをビルドし、コンテナレジストリに push しておく。ArgoCDにはコンテナレジストリのタグを登録する。登録後 OCI でチャートを pull して初期化する。
 
 ### 稼働監視
 
@@ -153,8 +154,8 @@ Tetragonのログを稼働監視で収集できるように Chart の ConfigMap 
 
 ### アップデート
 
-- OS については Flatcar Conatainer Linux の Automated update を使用して行う
-- k8s については Rancher（SUSE）の公式ツールである System Upgrade Controller（SUC） をKubernetesクラスタ内にデプロイして更新する
+- OS については Talos Linux 組み込みの A/B アトミックアップデートを Sidero Talos Omni 経由で行う
+- k8s については Sidero Talos Omni からの `talosctl upgrade-k8s` 相当の操作でバージョンアップを行う
 - OS と k8s の更新のタイミングを揃えることでセキュリティパッチのためのコンテナ再起動回数を最小限にする
 
 ## 構築手順
@@ -182,19 +183,18 @@ Tetragonのログを稼働監視で収集できるように Chart の ConfigMap 
      - Homepage URL: `https://grafana.poc.${DOMAIN}` (例: `https://grafana.poc.example.com`)
      - Authorization callback URL: `https://grafana.poc.${DOMAIN}/login/github`
    - 生成された **Client ID** を `GH_CLIENT_ID_GRAFANA`、**Client Secret** を `GH_CLIENT_SECRET_GRAFANA` として控えます。
-4. **AWS (SSM Agent 用 IAM ユーザー / ロール)**
-   - サーバへの SSH 接続や k8s API へのアクセスを AWS SSM Session Manager 経由で行うため、AWS アカウント上に IAM ユーザーとロールを準備します。
-   - 詳細な手順は [SSM-AGENT.md](./SSM-AGENT.md) を参照してください。
-   - Codespaces から AssumeRole 専用で使用する IAM ユーザー (`codespace-access`) のアクセスキー (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) と、SSM 操作用のロール (`SSMAgentProvisioner`) の ARN (`AWS_ROLE_ARN`) を控えておきます。
+4. **Sidero Talos Omni**
+   - サーバへの SSH 接続を行わず SideroLink 経由でのみノードを管理するため、事前に Sidero Talos Omni へのサインアップが必要です。
+   - Omni の Web UI (`https://<アカウント名>.omni.siderolabs.io`) からアカウントを作成し、エンドポイント URL を `OMNI_ENDPOINT` として控えます。
+   - Web UI の `Settings` > `Service Accounts` からサービスアカウントを作成し、発行されたキーを `OMNI_SERVICE_ACCOUNT_KEY` として控えます (Terraform provider と `omnictl` の認証に使用します)。
+   - 詳細な手順は [TALOS.md](./TALOS.md) を参照してください。
 
 ### 2. GitHub Codespaces の起動と環境変数設定
 
 1. 対象のリポジトリ（本リポジトリ）の Settings ページから `Secrets and variables` > `Codespaces` を開き、以下の環境変数 (Secrets) を登録します。
 
-   - `AWS_ACCESS_KEY_ID`: AssumeRole 専用 IAM ユーザーのアクセスキー (必須)
-   - `AWS_SECRET_ACCESS_KEY`: 上記アクセスキーのシークレット (必須)
-   - `AWS_ROLE_ARN`: SSM Agent 登録・操作用に AssumeRole するロールの ARN (必須)
-   - `AWS_REGION`: SSM Agent を登録する AWS リージョン (必須)
+   - `OMNI_ENDPOINT`: Sidero Talos Omni のエンドポイント URL (必須)
+   - `OMNI_SERVICE_ACCOUNT_KEY`: Sidero Talos Omni のサービスアカウントキー (必須)
    - `SAKURA_ACCESS_TOKEN`: さくらのクラウド API キーのアクセストークン (必須)
    - `SAKURA_ACCESS_TOKEN_SECRET`: さくらのクラウド API キーのアクセストークンのシークレット (必須)
    - `CLOUDFLARE_ACCOUNT_ID`: Cloudflare アカウント ID (必須)
@@ -204,6 +204,9 @@ Tetragonのログを稼働監視で収集できるように Chart の ConfigMap 
    - `GH_CLIENT_SECRET_ARGOCD`: GitHub OAuth アプリの Client Secret (必須)
    - `GH_CLIENT_ID_GRAFANA`: GitHub OAuth アプリの Client ID (必須)
    - `GH_CLIENT_SECRET_GRAFANA`: GitHub OAuth アプリの Client Secret (必須)
+   - `CONTAINER_REGISTRY_FQDN`: コンテナレジストリの FQDN (必須)
+   - `CONTAINER_REGISTRY_USER`: コンテナレジストリのユーザID (必須)
+   - `CONTAINER_REGISTRY_PASSWORD`: コンテナレジストリのパスワード (必須)
    - (その他、Readme上部の「パラメータ」表にある値を必要に応じて設定)
 
 2. リポジトリの画面に戻り、`Code` > `Codespaces` から新しい Codespace を起動します。
@@ -218,15 +221,15 @@ cd terraform && terraform init && cd ..
 
 ### 4. インフラ構築
 
-Ubuntu サーバのプロビジョニング、SSH パケットフィルタの設定、`flatcar-install` のインストールを行う。
+Ubuntu サーバのプロビジョニング、SSH パケットフィルタの設定、talosctl のインストールを行う。
 
 ```bash
 build-infra
 ```
 
-### 5. Flatcar Linux のインストールと起動
+### 5. Talos Linux のインストールと起動
 
-各サーバに Ignition ファイルを生成して Flatcar をインストールし、再起動する。k8s と ArgoCD は起動後に自動インストールされる。
+各サーバに Talos Linux のディスクイメージを書き込んで起動する。k8s と Cilium、ArgoCD は Sidero Talos Omni のクラスタ定義に基づき起動後に自動インストールされる。
 
 ```bash
 boot
@@ -234,36 +237,34 @@ boot
 
 ### 6. クラスタの確認
 
-インストールには数分かかる。サーバ起動後は Flatcar 上の SSM Agent が AWS に登録され、以下の `ssh` は `~/.ssh/config` の `ProxyCommand` により AWS SSM Session Manager 経由で接続される (パケットフィルタで SSH ポートを開放する必要はない)。
+インストールには数分かかる。Talos Linux には SSH が存在しないため、サーバ起動後は SideroLink 経由で Sidero Talos Omni に自動登録される。Omni の Web UI、または `omnictl` から状態を確認する。
 
 ```bash
-ssh core@<SAKURA_LABEL_PREFIX>-sv1
-sudo journalctl -u install-k8s.service -f     # k8s インストールログ
-sudo journalctl -u install-argocd.service -f  # ArgoCD インストールログ (sv1 のみ)
+omnictl get machinestatus
+omnictl get clusterstatus {{ SAKURA_LABEL_PREFIX }}
 ```
 
-ArgoCD の Pod が起動していることを確認する。
+ArgoCD の Pod が起動していることを確認するには、`omnictl` から取得した kubeconfig を使用する。
 
 ```bash
-export KUBECONFIG=/etc/rancher/k8s/k8s.yaml
+omnictl kubeconfig --cluster ${SAKURA_LABEL_PREFIX} ~/.kube/config
+export KUBECONFIG=~/.kube/config
 kubectl get pods -n argocd
 kubectl get nodes
 ```
 
 ### 7. ArgoCD ブートストラップ (install-infra-apps)
 
-YAML テンプレートをレンダリングし、`~/.kube/config` を設定した上で ArgoCD に App of Apps と各種マニフェストを適用する。このコマンドは Codespace から実行する。
+YAML テンプレートをレンダリングし、Omni から取得した kubeconfig を用いて ArgoCD に App of Apps と各種マニフェストを適用する。このコマンドは Codespace から実行する。
 
 ```bash
 install-infra-apps
 ```
 
 実行内容:
-1. `argocd/manifests/*.yaml.j2` および `argocd/apps/infra-apps.yaml.j2` を Jinja2 でレンダリングし `rendered/` に出力
-2. sv1 から kubeconfig を取得して `~/.kube/config` に保存 (context: `sakura-k8s`)
-3. 以下のマニフェストを `kubectl apply`:
-   - `rendered/bootstrap.yaml` — ArgoCD AppProject + App of Apps
-   - `rendered/infra-apps.yaml` — cert-manager / traefik / tetragon 等の Application 定義
+1. `omnictl` 経由でクラスタの kubeconfig を取得
+2. `argocd/manifests/*.yaml.j2` および `argocd/apps/infra-apps.yaml.j2` を Jinja2 でレンダリングし `rendered/` に出力
+3. 以下のマニフェストを適用:
    - `rendered/argocd-config.yaml` — GitHub OAuth + Ingress 設定
    - `rendered/cert-manager-issuers.yaml` — Let's Encrypt ClusterIssuer + DigitalOcean DNS トークン
    - `rendered/grafana-oauth-secret.yaml` — Grafana GitHub OAuth Secret
@@ -275,14 +276,6 @@ export KUBECONFIG=~/.kube/config
 kubectl get applications -n argocd
 kubectl get pods -n cert-manager
 kubectl get pods -n traefik
-```
-
-### 8. k8s API トンネルの停止（オプション）
-
-SSH 接続や k8s API へのアクセスは AWS SSM Session Manager 経由で行われ、パケットフィルタでポートを開放しないため、恒常的な無効化操作は不要である。`allow-ssh` でバックグラウンド起動した k8s API (6443) 用ポートフォワードセッションが残っている場合は、作業完了後に以下で停止しておく。
-
-```bash
-deny-ssh
 ```
 
 ### サーバの起動・停止
@@ -298,3 +291,4 @@ shutdown-servers  # 全サーバをシャットダウン
 destroy
 ```
 
+ただし、	LB 用 グローバル IP ルータ はこのコマンドで削除されないので、 Web コンソールから別途手動で削除する必要がある。これはグローバルIPのアロケートは月単位で行われるので、検証時に build-all -> destroy を繰り返した際に、 build-all ごとに約3500円が課金されるのを回避するためである。再利用すれば約3500円/月となる。

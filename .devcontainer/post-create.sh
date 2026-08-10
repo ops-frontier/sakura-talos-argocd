@@ -1,14 +1,14 @@
 #!/bin/bash
 set -e
 
-WORKSPACE=/workspaces/sakura-flatcar-k3s-argocd-iac
+WORKSPACE=/workspaces/sakura-talos-argocd
 
 # ---------------------------------------------------------------
 # TF_VAR_ 環境変数を ~/.bashrc に転記
 # ---------------------------------------------------------------
 cat << 'INNER_EOF' >> ~/.bashrc
 # Export TF_VAR_ variables from Codespaces secrets
-for var in AWS_ROLE_ARN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ACCESS_TOKEN SAKURA_ACCESS_TOKEN SAKURA_ACCESS_TOKEN_SECRET SAKURA_LABEL_PREFIX SAKURA_REGION SAKURA_SERVER_CPU SAKURA_SERVER_MEMORY SAKURA_SERVER_COMMITMENT SAKURA_SERVER_CPU_MODEL DOMAIN LE_ENVIRONMENT SAKURA_ISO_IMAGE_ID GH_ORGANIZATION GH_CLIENT_ID_GRAFANA GH_CLIENT_SECRET_GRAFANA GH_CLIENT_ID_ARGOCD GH_CLIENT_SECRET_ARGOCD AUTO_SHUTDOWN_AT_UTC; do
+for var in OMNI_ENDPOINT OMNI_SERVICE_ACCOUNT_KEY TALOS_VERSION KUBERNETES_VERSION CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ACCESS_TOKEN SAKURA_ACCESS_TOKEN SAKURA_ACCESS_TOKEN_SECRET SAKURA_LABEL_PREFIX SAKURA_REGION SAKURA_SERVER_CPU SAKURA_SERVER_MEMORY SAKURA_SERVER_COMMITMENT SAKURA_SERVER_CPU_MODEL DOMAIN LE_ENVIRONMENT SAKURA_ISO_IMAGE_ID GH_ORGANIZATION GH_CLIENT_ID_GRAFANA GH_CLIENT_SECRET_GRAFANA GH_CLIENT_ID_ARGOCD GH_CLIENT_SECRET_ARGOCD AUTO_SHUTDOWN_AT_UTC; do
     if [ -n "${!var}" ]; then
         export TF_VAR_$(echo "$var" | tr '[:upper:]' '[:lower:]')="${!var}"
     fi
@@ -33,27 +33,37 @@ INNER_EOF
 # Ansible Galaxy コレクション
 # (ansible-core / jinja2 は devcontainer.json の features で導入済み)
 # ---------------------------------------------------------------
-ansible-galaxy collection install community.general kubernetes.core 2>/dev/null || true
-# Ansible が使用する Python venv に kubernetes/jsonpatch をインストール
+ansible-galaxy collection install community.general kubernetes.core ansible.utils 2>/dev/null || true
+# Ansible が使用する Python venv に kubernetes/jsonpatch/netaddr をインストール
 # (ansible-playbook が使用する Python = ansible --version で確認できるパス)
+# netaddr は ansible.utils.ipaddr フィルタ (CIDR → dotted netmask 変換) に必要
 ANSIBLE_PYTHON=$(ansible --version 2>/dev/null | awk '/python version/{gsub(/.*\(|\).*/,""); print}')
 if [ -n "$ANSIBLE_PYTHON" ] && [ -x "$ANSIBLE_PYTHON" ]; then
-    echo "==> Ansible Python (${ANSIBLE_PYTHON}) に kubernetes/jsonpatch をインストール中..."
-    "$ANSIBLE_PYTHON" -m pip install --quiet kubernetes jsonpatch 2>/dev/null || true
+    echo "==> Ansible Python (${ANSIBLE_PYTHON}) に kubernetes/jsonpatch/netaddr をインストール中..."
+    "$ANSIBLE_PYTHON" -m pip install --quiet kubernetes jsonpatch netaddr 2>/dev/null || true
 else
     echo "==> Ansible Python が見つかりませんでした。スキップします。"
 fi
 
 # ---------------------------------------------------------------
-# butane インストール
+# talosctl / omnictl インストール
 # ---------------------------------------------------------------
-BUTANE_VERSION="v0.21.0"
-ARCH=$(uname -m)
-BUTANE_URL="https://github.com/coreos/butane/releases/download/${BUTANE_VERSION}/butane-${ARCH}-unknown-linux-gnu"
-echo "==> butane ${BUTANE_VERSION} をインストール中..."
-sudo curl -sfL "${BUTANE_URL}" -o /usr/local/bin/butane
-sudo chmod +x /usr/local/bin/butane
-butane --version
+TALOS_VERSION="${TALOS_VERSION:-v1.9.0}"
+TALOSCTL_ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+echo "==> talosctl ${TALOS_VERSION} をインストール中..."
+curl -sfL "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-${TALOSCTL_ARCH}" \
+  -o /tmp/talosctl
+sudo install -o root -g root -m 0755 /tmp/talosctl /usr/local/bin/talosctl
+rm -f /tmp/talosctl
+talosctl version --client
+
+OMNICTL_ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+echo "==> omnictl をインストール中..."
+curl -sfL "https://github.com/siderolabs/omni/releases/latest/download/omnictl-linux-${OMNICTL_ARCH}" \
+  -o /tmp/omnictl
+sudo install -o root -g root -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+rm -f /tmp/omnictl
+omnictl version || true
 
 # ---------------------------------------------------------------
 # crane (go-containerregistry) インストール
@@ -85,18 +95,6 @@ echo "==> helm をインストール中..."
 curl -sfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 sudo chmod +x /usr/local/bin/helm
 helm version
-
-# ---------------------------------------------------------------
-# AWS Session Manager Plugin インストール
-# (aws ssm start-session でポートフォワード等を行うために必要)
-# ---------------------------------------------------------------
-SSM_ARCH=$(uname -m | sed 's/x86_64/ubuntu_64bit/;s/aarch64/ubuntu_arm64/')
-echo "==> session-manager-plugin をインストール中..."
-curl -sfL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${SSM_ARCH}/session-manager-plugin.deb" \
-  -o /tmp/session-manager-plugin.deb
-sudo dpkg -i /tmp/session-manager-plugin.deb
-rm -f /tmp/session-manager-plugin.deb
-session-manager-plugin --version
 
 # ---------------------------------------------------------------
 # .ssh ディレクトリを作成 (Terraform が秘密鍵を書き込む先)

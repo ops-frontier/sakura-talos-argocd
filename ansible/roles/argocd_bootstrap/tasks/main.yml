@@ -1,6 +1,6 @@
 ---
 # argocd_bootstrap role – ArgoCD の初期設定マニフェストを apply する
-# kubernetes.core モジュールで localhost から k3s API に接続する
+# kubernetes.core モジュールで localhost から Kubernetes API に接続する
 # push_infra_apps role の後に実行すること
 
 - name: Apply ArgoCD bootstrap manifest

@@ -8,8 +8,188 @@
       ansible.builtin.pause:
         prompt: "インフラを削除します。続行するには Enter を押してください (Ctrl+C で中断)"
 
-    - name: Terraform destroy
-      community.general.terraform:
-        project_path: "{{ terraform_dir }}"
-        state: absent
-        force_init: true
+    - name: Read Omni cluster state
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - state
+          - show
+          - -no-color
+          - omni_cluster.main
+        chdir: "{{ terraform_dir }}"
+      register: _omni_cluster_state
+      changed_when: false
+      failed_when: false
+
+    - name: Save Omni cluster name from state
+      ansible.builtin.set_fact:
+        _omni_cluster_name: >-
+          {{ _omni_cluster_state.stdout
+             | regex_search('(?m)^\s*name\s*=\s*"([^"]+)"\s*$', '\1')
+             | first }}
+      when: _omni_cluster_state.rc == 0
+
+    - name: Check whether the Omni cluster exists
+      ansible.builtin.command:
+        argv:
+          - omnictl
+          - get
+          - cluster
+          - "{{ _omni_cluster_name }}"
+      environment:
+        OMNI_ENDPOINT: "{{ lookup('env', 'OMNI_ENDPOINT') or lookup('env', 'TF_VAR_omni_endpoint') }}"
+        OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') or lookup('env', 'TF_VAR_omni_service_account_key') }}"
+      register: _omni_cluster_get
+      when: _omni_cluster_state.rc == 0
+      changed_when: false
+      failed_when: _omni_cluster_get.rc != 0 and 'NotFound' not in _omni_cluster_get.stderr
+
+    - name: List machines registered to the Omni cluster
+      ansible.builtin.command:
+        argv:
+          - omnictl
+          - get
+          - machinestatus
+          - -l
+          - "sakura.io/cluster={{ _omni_cluster_name }}"
+          - -o
+          - "jsonpath={.metadata.id}"
+      environment:
+        OMNI_ENDPOINT: "{{ lookup('env', 'OMNI_ENDPOINT') or lookup('env', 'TF_VAR_omni_endpoint') }}"
+        OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') or lookup('env', 'TF_VAR_omni_service_account_key') }}"
+      register: _omni_cluster_machines
+      when:
+        - _omni_cluster_state.rc == 0
+        - _omni_cluster_get.rc == 0
+      changed_when: false
+
+    - name: Force delete machines from the Omni cluster
+      ansible.builtin.command:
+        argv:
+          - omnictl
+          - cluster
+          - machine
+          - delete
+          - "{{ item }}"
+          - --force
+          - --force-etcd-leave
+          - --yes-i-am-really-sure
+      environment:
+        OMNI_ENDPOINT: "{{ lookup('env', 'OMNI_ENDPOINT') or lookup('env', 'TF_VAR_omni_endpoint') }}"
+        OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') or lookup('env', 'TF_VAR_omni_service_account_key') }}"
+      register: _omni_machine_delete_results
+      loop: "{{ _omni_cluster_machines.stdout_lines | default([]) }}"
+      when: _omni_cluster_get.rc | default(1) == 0
+      async: 300
+      poll: 5
+      changed_when: true
+      failed_when: false
+
+    - name: Report Omni machine deletion failures
+      ansible.builtin.debug:
+        msg: >-
+          Omni machine {{ item.item }} deletion failed or timed out after 300 seconds;
+          continuing with the remaining machines: {{ item.msg | default(item.stderr | default('unknown error')) }}
+      loop: "{{ _omni_machine_delete_results.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - not item.skipped | default(false)
+        - item.rc | default(1) != 0
+
+    - name: Delete Omni cluster and disconnected machines
+      ansible.builtin.command:
+        argv:
+          - omnictl
+          - cluster
+          - delete
+          - "{{ _omni_cluster_name }}"
+          - --destroy-disconnected-machines
+      environment:
+        OMNI_ENDPOINT: "{{ lookup('env', 'OMNI_ENDPOINT') or lookup('env', 'TF_VAR_omni_endpoint') }}"
+        OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') or lookup('env', 'TF_VAR_omni_service_account_key') }}"
+      when:
+        - _omni_cluster_state.rc == 0
+        - _omni_cluster_get.rc == 0
+      changed_when: true
+
+    - name: Read LB router state
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - state
+          - show
+          - -no-color
+          - sakuracloud_internet.lb_router
+        chdir: "{{ terraform_dir }}"
+      register: _lb_router_state
+      changed_when: false
+      failed_when: false
+
+    - name: Save LB router ID from state
+      ansible.builtin.set_fact:
+        _lb_router_id: >-
+          {{ _lb_router_state.stdout
+             | regex_search('(?m)^\s*id\s*=\s*"([^"]+)"\s*$', '\1')
+             | first }}
+      when: _lb_router_state.rc == 0
+
+    - name: Check saved LB router ID
+      ansible.builtin.stat:
+        path: "{{ terraform_dir }}/.lb_router_id"
+      register: _lb_router_id_file
+      when: _lb_router_state.rc != 0
+
+    - name: Require a saved LB router ID when state is missing
+      ansible.builtin.assert:
+        that: _lb_router_id_file.stat.exists
+        fail_msg: >-
+          LB router is missing from Terraform state and
+          {{ terraform_dir }}/.lb_router_id does not exist.
+      when: _lb_router_state.rc != 0
+
+    - name: Read saved LB router ID
+      ansible.builtin.slurp:
+        src: "{{ terraform_dir }}/.lb_router_id"
+      register: _saved_lb_router_id
+      when: _lb_router_state.rc != 0
+
+    - name: Restore LB router ID from file
+      ansible.builtin.set_fact:
+        _lb_router_id: "{{ _saved_lb_router_id.content | b64decode | trim }}"
+      when: _lb_router_state.rc != 0
+
+    - name: Persist LB router ID outside Terraform state
+      ansible.builtin.copy:
+        content: "{{ _lb_router_id }}\n"
+        dest: "{{ terraform_dir }}/.lb_router_id"
+        mode: "0600"
+
+    - name: Remove LB router from Terraform state
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - state
+          - rm
+          - sakuracloud_internet.lb_router
+        chdir: "{{ terraform_dir }}"
+      changed_when: true
+      when: _lb_router_state.rc == 0
+
+    - name: Destroy infrastructure except LB router
+      block:
+        - name: Terraform destroy
+          community.general.terraform:
+            project_path: "{{ terraform_dir }}"
+            state: absent
+            force_init: true
+      always:
+        - name: Restore LB router to Terraform state
+          ansible.builtin.command:
+            argv:
+              - terraform
+              - import
+              - sakuracloud_internet.lb_router
+              - "{{ _lb_router_id }}"
+            chdir: "{{ terraform_dir }}"
+          changed_when: true

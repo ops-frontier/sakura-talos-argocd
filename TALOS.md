@@ -35,7 +35,7 @@ AWS SSM Agent は廃止し、SideloLink を導入する。OSの起動時に SIDE
 
 README.md の「事前準備」に SIDELO Talos で事前に Web UI から実施すべき内容を記載する。
 必要に応じてトークンなどの認証情報のための環境変数を追加する。
-AWS関連の記載は作上する。
+AWS関連の記載は削除する。
 
 ### SSH 接続の廃止
 

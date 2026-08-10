@@ -1,9 +1,8 @@
 {
-  "name": "Flatcar IaC (Terraform + k3s)",
+  "name": "Talos IaC (Terraform + Ansible)",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
-    "ghcr.io/robbert229/devcontainer-features/opentofu:1": {
-      },
+    "ghcr.io/devcontainers/features/terraform:1": {},
     "ghcr.io/devcontainers/features/github-cli:1": {
       "version": "latest"
     },

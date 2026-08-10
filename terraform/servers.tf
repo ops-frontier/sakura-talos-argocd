@@ -2,17 +2,8 @@
 # ローカル変数
 # ---------------------------------------------------------------
 locals {
-  node_count    = 3
-  node_names    = [for i in range(1, local.node_count + 1) : "${var.sakura_label_prefix}-sv${i}"]
-  cluster_token = random_password.k3s_cluster_token.result
-}
-
-# ---------------------------------------------------------------
-# k3s クラスタトークン (ランダム生成)
-# ---------------------------------------------------------------
-resource "random_password" "k3s_cluster_token" {
-  length  = 64
-  special = false
+  node_count = 3
+  node_names = [for i in range(1, local.node_count + 1) : "sv${i}"]
 }
 
 # ---------------------------------------------------------------
@@ -20,7 +11,7 @@ resource "random_password" "k3s_cluster_token" {
 # ---------------------------------------------------------------
 resource "sakuracloud_switch" "internal" {
   name        = "${var.sakura_label_prefix}-internal"
-  description = "k3s クラスタノード間内部通信用スイッチ"
+  description = "Kubernetes クラスタノード間内部通信用スイッチ"
 }
 
 # ---------------------------------------------------------------
@@ -49,7 +40,7 @@ resource "sakuracloud_disk" "bootstrap" {
 }
 
 # ---------------------------------------------------------------
-# ターゲットディスク (Flatcar 用 40GB・未フォーマット)
+# ターゲットディスク (Talos Linux 用 40GB・未フォーマット)
 # ---------------------------------------------------------------
 resource "sakuracloud_disk" "nodes" {
   for_each = toset(local.node_names)
@@ -58,7 +49,7 @@ resource "sakuracloud_disk" "nodes" {
   plan        = "ssd"
   size        = 40
   connector   = "virtio"
-  description = "Flatcar target disk for ${each.key}"
+  description = "Talos Linux target disk for ${each.key}"
 }
 
 # ---------------------------------------------------------------
@@ -68,8 +59,8 @@ resource "sakuracloud_server" "nodes" {
   for_each = toset(local.node_names)
 
   name        = each.key
-  description = "k3s control-plane + worker node"
-  tags        = [var.sakura_label_prefix, "k3s", each.key]
+  description = "Talos control-plane + worker node"
+  tags        = [var.sakura_label_prefix, "talos", each.key]
 
   core       = var.sakura_server_cpu
   memory     = var.sakura_server_memory
@@ -79,8 +70,16 @@ resource "sakuracloud_server" "nodes" {
   # ISOイメージは使用しない。ブートストラップディスク (Ubuntu) から起動
   disks = [
     sakuracloud_disk.bootstrap[each.key].id, # /dev/vda - Ubuntu ブートディスク
-    sakuracloud_disk.nodes[each.key].id,     # /dev/vdb - Flatcar ターゲットディスク
+    sakuracloud_disk.nodes[each.key].id,     # /dev/vdb - Talos ターゲットディスク
   ]
+
+  # boot_node role が Sakura API で直接ディスク順序を入れ替えるため、
+  # Terraform 側の宣言順序 (常に bootstrap 優先) との差分を無視する。
+  # 無視しないと terraform apply のたびに Talos 優先の起動順序が
+  # bootstrap 優先に巻き戻ってしまう。
+  lifecycle {
+    ignore_changes = [disks]
+  }
 
   # NIC 0: LB ルータスイッチ (グローバル IP / LB バックエンド)
   network_interface {

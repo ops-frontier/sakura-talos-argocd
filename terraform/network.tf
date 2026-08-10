@@ -74,33 +74,7 @@ resource "cloudflare_record" "grafana" {
 }
 
 # ---------------------------------------------------------------
-# さくらのクラウド コンテナレジストリ
+# コンテナレジストリ
+# CONTAINER_REGISTRY_FQDN / CONTAINER_REGISTRY_USER / CONTAINER_REGISTRY_PASSWORD
+# 環境変数で外部のコンテナレジストリを指定するため、terraform では構築しない
 # ---------------------------------------------------------------
-resource "sakuracloud_container_registry" "main" {
-  name            = "${replace(var.sakura_label_prefix, "-", "")}registry"
-  access_level    = "none"
-  subdomain_label = var.sakura_registry_subdomain_label
-  description     = "インフラ組み込み Helm チャート用コンテナレジストリ"
-
-  user {
-    name       = "k3s-pull"
-    password   = random_password.registry_pull_password.result
-    permission = "readonly"
-  }
-
-  user {
-    name       = "ci-push"
-    password   = random_password.registry_push_password.result
-    permission = "readwrite"
-  }
-}
-
-resource "random_password" "registry_pull_password" {
-  length  = 32
-  special = false
-}
-
-resource "random_password" "registry_push_password" {
-  length  = 32
-  special = false
-}

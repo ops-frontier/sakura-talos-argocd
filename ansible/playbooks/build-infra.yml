@@ -1,5 +1,5 @@
 ---
-# build-infra.yml – terraform apply → SSH 許可 → flatcar-install インストール → SSH 許可解除
+# build-infra.yml – terraform apply → SSH 許可 → talosctl インストール → SSH 許可解除
 - name: Gather Terraform outputs and global IP
   hosts: localhost
   gather_facts: false
@@ -51,11 +51,7 @@
         my_ip: "{{ my_ip }}"
       loop: "{{ tf_outputs.node_public_ips.value | dict2items }}"
 
-    - name: Update ~/.ssh/config
-      ansible.builtin.include_role:
-        name: setup_ssh_config
-
-- name: Wait for Ubuntu SSH and install flatcar-install
+- name: Wait for Ubuntu SSH and install talosctl
   hosts: servers
   gather_facts: false
   strategy: free
@@ -83,9 +79,9 @@
       retries: 30
       delay: 10
 
-    - name: Install flatcar-install on Ubuntu
+    - name: Install talosctl on Ubuntu
       ansible.builtin.include_role:
-        name: install_flatcar_deps
+        name: install_talos_deps
 
 - name: Close SSH access after installation
   hosts: localhost

@@ -1,6 +1,6 @@
 ---
 # wait_for_argocd role – ArgoCD が Ready になるまで待機する
-# kubernetes.core モジュールで localhost から k3s API に接続する
+# kubernetes.core モジュールで localhost から Kubernetes API に接続する
 
 - name: Wait for argocd-server to be available
   kubernetes.core.k8s_info:

@@ -29,12 +29,29 @@ variable "cloudflare_access_token" {
 }
 
 # ---------------------------------------------------------------
-# AWS ロール名
+# Sidero Talos Omni
 # ---------------------------------------------------------------
-variable "aws_role_arn" {
-  description = "AWS ロール ARN"
+variable "omni_endpoint" {
+  description = "Sidero Talos Omni のエンドポイント URL"
+  type        = string
+}
+
+variable "omni_service_account_key" {
+  description = "Sidero Talos Omni のサービスアカウントキー (Terraform provider 認証用)"
   type        = string
   sensitive   = true
+}
+
+variable "talos_version" {
+  description = "Talos Linux のバージョン"
+  type        = string
+  default     = "v1.9.0"
+}
+
+variable "kubernetes_version" {
+  description = "Talos に組み込む Kubernetes のバージョン"
+  type        = string
+  default     = "v1.31.1"
 }
 
 # ---------------------------------------------------------------
@@ -77,15 +94,9 @@ variable "sakura_server_cpu_model" {
 }
 
 variable "sakura_iso_image_id" {
-  description = "さくらのクラウドにアップロードした Flatcar Linux インストーラ ISO の ID (廃止: Ubuntu アーカイブブートに移行済み)"
+  description = "(廃止予定: 未使用の変数。Ubuntu アーカイブブート + talosctl image (Imager) によるインストールに移行済み)"
   type        = string
   default     = null
-}
-
-variable "sakura_registry_subdomain_label" {
-  description = "コンテナレジストリのサブドメインラベル (グローバル一意の必要があります)"
-  type        = string
-  default     = "ops-frontier-registry-20260730-2"
 }
 
 # ---------------------------------------------------------------

@@ -46,7 +46,7 @@ subjects:
     namespace: lb-controller
 ---
 # ── ノード名 → 公開 IP マッピング ─────────────────────────────────
-# k3s は node-ip に内部 IP を使用するため、Node オブジェクトの ExternalIP が
+# Kubernetes は node-ip に内部 IP を使用するため、Node オブジェクトの ExternalIP が
 # 設定されない場合がある。Terraform outputs の公開 IP を ConfigMap で提供する。
 apiVersion: v1
 kind: ConfigMap
@@ -79,7 +79,7 @@ spec:
       serviceAccountName: lb-controller
       containers:
         - name: lb-controller
-          image: "{{ tf_outputs.container_registry_fqdn.value }}/lb-controller:{{ lb_controller_version }}"
+          image: "{{ container_registry_fqdn }}/lb-controller:{{ lb_controller_version }}"
           imagePullPolicy: Always
           # コンテナイメージは python:3.14-slim ベース (dev container の Python と一致)
           env:

@@ -48,7 +48,8 @@ resource "sakuracloud_packet_filter" "public" {
     description      = "Inbound HTTP"
   }
 
-  # SSH は allow-ssh で動的に追加するため、デフォルトは閉じる
+  # SSH は build-infra / boot 実行時に packet_filter_ssh_allow ロールが動的に追加し、
+  # 完了後 packet_filter_ssh_deny ロールで解除する。デフォルトは閉じる。
 
   # IP フラグメントを許可 (大きなパケットの断片化対応)
   expression {
@@ -59,47 +60,60 @@ resource "sakuracloud_packet_filter" "public" {
 
   # ソフトウェアダウンロード用アウトバウンド HTTPS (レスポンス)
   expression {
-    protocol    = "tcp"
-    source_port = "443"
+    protocol         = "tcp"
+    source_port      = "443"
     destination_port = "32768-60999"
-    allow       = true
-    description = "outbound HTTPS"
+    allow            = true
+    description      = "outbound HTTPS"
   }
 
   # ソフトウェアダウンロード用アウトバウンド HTTP (レスポンス)
   expression {
-    protocol    = "tcp"
-    source_port = "80"
+    protocol         = "tcp"
+    source_port      = "80"
     destination_port = "32768-60999"
-    allow       = true
-    description = "outbound HTTP"
+    allow            = true
+    description      = "outbound HTTP"
   }
 
   # DNS TCP outbound (レスポンス)
   expression {
-    protocol    = "tcp"
-    source_port = "53"
+    protocol         = "tcp"
+    source_port      = "53"
     destination_port = "32768-60999"
-    allow       = true
-    description = "DNS TCP outbound"
+    allow            = true
+    description      = "DNS TCP outbound"
   }
 
   # DNS UDP outbound (レスポンス)
   expression {
-    protocol    = "udp"
-    source_port = "53"
+    protocol         = "udp"
+    source_port      = "53"
     destination_port = "32768-60999"
-    allow       = true
-    description = "DNS UDP outbound"
+    allow            = true
+    description      = "DNS UDP outbound"
   }
 
   # NTP UDP outbound (レスポンス)
   expression {
-    protocol    = "udp"
-    source_port = "123"
+    protocol         = "udp"
+    source_port      = "123"
     destination_port = "32768-60999"
-    allow       = true
-    description = "NTP outbound"
+    allow            = true
+    description      = "NTP outbound"
+  }
+
+  # SideroLink (Omni WireGuard) アウトバウンド (レスポンス)
+  # omnictl get connectionparams で確認した実際の WireGuard エンドポイント
+  # ポート (UDP 49298) への戻りパケットを許可する。talos.events.sink 等の
+  # [fdae:...]:8090 はこの WireGuard トンネル内部の仮想アドレスであり、
+  # 物理NIC上のパケットフィルタには現れない。
+  expression {
+    protocol         = "udp"
+    source_port      = "49298"
+    destination_port = "32768-60999"
+    allow            = true
+    description      = "SideroLink (Omni WireGuard) outbound"
   }
 
   # ICMP 双方向

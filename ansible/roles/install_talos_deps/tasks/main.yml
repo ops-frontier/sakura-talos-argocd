@@ -1,0 +1,19 @@
+---
+# install_talos_deps role – Ubuntu サーバに omnictl (インストールイメージ取得用) をインストールする
+
+- name: Install required packages and omnictl
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      echo nameserver 8.8.8.8 | sudo tee /etc/resolv.conf > /dev/null
+      sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y curl xz-utils
+      ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+      curl -sfL "https://github.com/siderolabs/omni/releases/latest/download/omnictl-linux-${ARCH}" -o /tmp/omnictl
+      sudo install -o root -g root -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+      rm -f /tmp/omnictl
+  vars:
+    ansible_user: "{{ ubuntu_ssh_user }}"
+    ansible_ssh_private_key_file: "{{ ssh_key_path }}"
+    ansible_python_interpreter: /usr/bin/python3
+  changed_when: true
