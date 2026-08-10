@@ -4,7 +4,7 @@
 Traefik Pod の起動・停止に連動して、さくらのクラウド LB のサーバ登録を動的に管理する。
 
 【設計方針】
-  Traefik は NodePort + externalIPs で動作しており、Cilium の kube-proxy replacement が
+    Traefik は ClusterIP + externalIPs で動作しており、Cilium の kube-proxy replacement が
   全 Ready ノードで VIP / 実 IP 宛のトラフィックを Traefik pod へルーティングする。
   したがって LB には「全 Ready ノードの実 IP」を登録し、
   - ノードが Ready になったら LB に追加 (ヘルスチェック即時成功)
@@ -173,7 +173,7 @@ def _get_node_ip_map(v1: k8s_client.CoreV1Api) -> dict[str, str]:
 def _get_ready_node_ips(v1: k8s_client.CoreV1Api) -> frozenset[str]:
     """LB に登録すべき Ready ノードの公開 IP セットを返す。
 
-    Cilium の kube-proxy replacement により、全 Ready ノードが Traefik へのトラフィックを
+    Cilium の externalIPs 処理により、全 Ready ノードが Traefik へのトラフィックを
     ルーティングできる。cordon (unschedulable) ノードは計画停止中とみなし除外する。
     """
     nodes = v1.list_node()

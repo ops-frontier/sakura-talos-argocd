@@ -75,6 +75,6 @@ resource "cloudflare_record" "grafana" {
 
 # ---------------------------------------------------------------
 # コンテナレジストリ
-# CONTAINER_REGISTRY_FQDN / CONTAINER_REGISTRY_USER / CONTAINER_REGISTRY_PASSWORD
+# CR_FQDN / CR_USER / CR_PASSWORD
 # 環境変数で外部のコンテナレジストリを指定するため、terraform では構築しない
 # ---------------------------------------------------------------

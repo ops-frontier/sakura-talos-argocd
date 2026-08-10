@@ -48,9 +48,9 @@ IaC のツールとしては、Terraform, Ansible を使用する。ディスク
 |GH_CLIENT_ID_ARGOCD|Github ClientID ArgoCD用||必須|
 |GH_CLIENT_SECRET_ARGOCD|Github Secret ArgoCD用||必須|
 |AUTO_SHUTDOWN_AT_UTC|毎日自動シャットダウンする時刻 (UTC)。systemd OnCalendar 形式 (例: `11:00:00` = 20:00 JST)。未設定の場合は自動シャットダウンなし。|11:00:00|なし|
-|CONTAINER_REGISTRY_FQDN|組み込みチャート/イメージを push・pull するコンテナレジストリの FQDN|registry.example.com|必須|
-|CONTAINER_REGISTRY_USER|コンテナレジストリのユーザID|k8s-user|必須|
-|CONTAINER_REGISTRY_PASSWORD|コンテナレジストリのパスワード|xxxxxxxx|必須|
+|CR_FQDN|組み込みチャート/イメージを push・pull するコンテナレジストリの FQDN|registry.example.com|必須|
+|CR_USER|コンテナレジストリのユーザID|k8s-user|必須|
+|CR_PASSWORD|コンテナレジストリのパスワード|xxxxxxxx|必須|
 
 なお、環境変数は CodeSpaces から設定できるようにするため、大文字でなければならない。terraform で利用する変数については TF_VAR_ で始まる環境変数に  postCreateCommand で転記する。
 
@@ -131,7 +131,7 @@ graph TD
 ### Helmチャート管理
 
 Argo CD を導入して Helm チャートを管理する。 Helm チャートはインフラ層には稼働監視と eBPF が組み込みチャートとしてインストールされる。
-組み込みチャートは外部のコンテナレジストリに登録される。コンテナレジストリは terraform では構築せず、`CONTAINER_REGISTRY_FQDN` / `CONTAINER_REGISTRY_USER` / `CONTAINER_REGISTRY_PASSWORD` の環境変数で接続先とユーザを指定する。
+組み込みチャートは外部のコンテナレジストリに登録される。コンテナレジストリは terraform では構築せず、`CR_FQDN` / `CR_USER` / `CR_PASSWORD` の環境変数で接続先とユーザを指定する。
 Argo CD (Omni により自動デプロイ済み) に対して、稼働監視とeBPF のチャートをビルドし、コンテナレジストリに push しておく。ArgoCDにはコンテナレジストリのタグを登録する。登録後 OCI でチャートを pull して初期化する。
 
 ### 稼働監視
@@ -204,9 +204,9 @@ Tetragonのログを稼働監視で収集できるように Chart の ConfigMap 
    - `GH_CLIENT_SECRET_ARGOCD`: GitHub OAuth アプリの Client Secret (必須)
    - `GH_CLIENT_ID_GRAFANA`: GitHub OAuth アプリの Client ID (必須)
    - `GH_CLIENT_SECRET_GRAFANA`: GitHub OAuth アプリの Client Secret (必須)
-   - `CONTAINER_REGISTRY_FQDN`: コンテナレジストリの FQDN (必須)
-   - `CONTAINER_REGISTRY_USER`: コンテナレジストリのユーザID (必須)
-   - `CONTAINER_REGISTRY_PASSWORD`: コンテナレジストリのパスワード (必須)
+   - `CR_FQDN`: コンテナレジストリの FQDN (必須)
+   - `CR_USER`: コンテナレジストリのユーザID (必須)
+   - `CR_PASSWORD`: コンテナレジストリのパスワード (必須)
    - (その他、Readme上部の「パラメータ」表にある値を必要に応じて設定)
 
 2. リポジトリの画面に戻り、`Code` > `Codespaces` から新しい Codespace を起動します。

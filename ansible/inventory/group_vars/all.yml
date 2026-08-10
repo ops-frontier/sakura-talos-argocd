@@ -8,7 +8,7 @@ known_hosts_path: "{{ workspace_dir }}/.ssh/known_hosts"
 rendered_dir: "{{ workspace_dir }}/rendered"
 
 infra_apps_chart_name: "infra-apps"
-infra_apps_chart_version: "0.2.7"
+infra_apps_chart_version: "0.2.12"
 lb_controller_version: "0.1.7"
 
 ubuntu_ssh_user: "ubuntu"
@@ -27,9 +27,9 @@ sakura_region: >-
 sakura_api_base: "https://secure.sakura.ad.jp/cloud/zone/{{ sakura_region }}/api/cloud/1.1"
 
 # コンテナレジストリ 接続情報 (環境変数から取得。terraform では構築しない)
-container_registry_fqdn: "{{ lookup('env', 'CONTAINER_REGISTRY_FQDN') }}"
-container_registry_user: "{{ lookup('env', 'CONTAINER_REGISTRY_USER') }}"
-container_registry_password: "{{ lookup('env', 'CONTAINER_REGISTRY_PASSWORD') }}"
+container_registry_fqdn: "{{ lookup('env', 'CR_FQDN') }}"
+container_registry_user: "{{ lookup('env', 'CR_USER') }}"
+container_registry_password: "{{ lookup('env', 'CR_PASSWORD') }}"
 
 # Talos バージョン (omnictl でのインストールメディア作成に使用)
 talos_version: >-

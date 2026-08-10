@@ -22,7 +22,7 @@ spec:
     helm:
       values: |
         service:
-          type: NodePort
+          type: ClusterIP
           spec:
             externalIPs:
               - "{{ lb_vip_ip }}"
@@ -31,12 +31,9 @@ spec:
 {% endfor %}
         ports:
           web:
-            nodePort: 80
             redirectTo:
               port: websecure
               permanent: true
-          websecure:
-            nodePort: 443
         additionalArguments:
           - "--serversTransport.insecureSkipVerify=true"
           - "--entryPoints.websecure.http.tls=true"
@@ -111,15 +108,11 @@ spec:
     helm:
       values: |
         tetragon:
-          exportFilename: /var/run/cilium/tetragon/tetragon.log
+          exportFilename: tetragon.log
           exportFileMaxSizeMB: 10
           exportFileMaxBackups: 5
-          exportFilePerm: "600"
-          # JSON エクスポートで vector が収集できるようにする
+          exportFilePerm: "644"
           enableExportAggregation: false
-        export:
-          stdout:
-            enabled: true
   destination:
     server: https://kubernetes.default.svc
     namespace: kube-system
@@ -147,12 +140,18 @@ spec:
         role: Agent
         service:
           enabled: false
+        extraVolumes:
+          - name: tetragon-logs
+            hostPath:
+              path: /var/run/cilium/tetragon
+              type: DirectoryOrCreate
+        extraVolumeMounts:
+          - name: tetragon-logs
+            mountPath: /var/run/cilium/tetragon
+            readOnly: true
         customConfig:
           data_dir: /vector-data-dir
           sources:
-            kubernetes_logs:
-              type: kubernetes_logs
-              auto_partial_merge: true
             tetragon_logs:
               type: file
               include:
@@ -160,36 +159,79 @@ spec:
               data_dir: /vector-data-dir
 
           transforms:
-            parse_json_logs:
+            normalize_tetragon_events:
               type: remap
               inputs:
-                - kubernetes_logs
                 - tetragon_logs
               source: |
-                if is_string(.message) {
-                  parsed, err = parse_json(.message)
-                  if err == null && is_object(parsed) {
-                    . = merge!(., parsed)
-                  }
+                event = parse_json!(string!(.message))
+                event_type = "unknown"
+                process = {}
+                parent = {}
+
+                if exists(event.process_exec) {
+                  event_type = "process_exec"
+                  process = event.process_exec.process
+                  parent = event.process_exec.parent
+                } else if exists(event.process_exit) {
+                  event_type = "process_exit"
+                  process = event.process_exit.process
+                  parent = event.process_exit.parent
+                } else if exists(event.process_kprobe) {
+                  event_type = "process_kprobe"
+                  process = event.process_kprobe.process
+                  parent = event.process_kprobe.parent
+                } else if exists(event.process_uprobe) {
+                  event_type = "process_uprobe"
+                  process = event.process_uprobe.process
+                  parent = event.process_uprobe.parent
+                } else if exists(event.process_tracepoint) {
+                  event_type = "process_tracepoint"
+                  process = event.process_tracepoint.process
+                  parent = event.process_tracepoint.parent
+                } else if exists(event.process_lsm) {
+                  event_type = "process_lsm"
+                  process = event.process_lsm.process
+                  parent = event.process_lsm.parent
+                }
+
+                . = {
+                  "timestamp": parse_timestamp!(event.time, format: "%+"),
+                  "event_type": event_type,
+                  "node_name": to_string(event.node_name) ?? "",
+                  "namespace": to_string(process.pod.namespace) ?? "",
+                  "pod_name": to_string(process.pod.name) ?? "",
+                  "container_name": to_string(process.pod.container.name) ?? "",
+                  "binary": to_string(process.binary) ?? "",
+                  "arguments": to_string(process.arguments) ?? "",
+                  "parent_binary": to_string(parent.binary) ?? "",
+                  "user_id": to_int(process.uid) ?? 0,
+                  "event": encode_json(event)
                 }
 
           sinks:
             greptimedb_sink:
               type: greptimedb_logs
               inputs:
-                - parse_json_logs
-              endpoint: "http://10.43.1.1:4000"
-              table: k8s_logs
+                - normalize_tetragon_events
+              endpoint: "http://10.96.1.1:4000"
+              table: tetragon_logs
               dbname: public
   destination:
     server: https://kubernetes.default.svc
-    namespace: observability
+    namespace: vector
   syncPolicy:
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: baseline
+        pod-security.kubernetes.io/warn: baseline
     automated:
       prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - ServerSideApply=true
 ---
 # ---------------------------------------------------------------
 # GreptimeDB (ログ・メトリクス蓄積)
@@ -208,6 +250,8 @@ spec:
     helm:
       values: |
         dataHome: /data/greptimedb
+        persistence:
+          enabled: false
   destination:
     server: https://kubernetes.default.svc
     namespace: greptimedb
@@ -263,7 +307,7 @@ spec:
             datasources:
               - name: GreptimeDB
                 type: mysql
-                url: "10.43.1.1:4002"
+                url: "10.96.1.1:4002"
                 database: public
                 isDefault: true
         dashboardProviders:
@@ -280,26 +324,26 @@ spec:
                   path: /var/lib/grafana/dashboards/default
         dashboards:
           default:
-            k8s-logs:
+            tetragon-events:
               json: |-
                 {
                   "id": null,
-                  "uid": "k8s-logs",
-                  "title": "k8s Logs",
+                  "uid": "tetragon-events",
+                  "title": "Tetragon Security Events",
                   "schemaVersion": 38,
-                  "version": 1,
+                  "version": 2,
                   "refresh": "30s",
                   "time": { "from": "now-1h", "to": "now" },
                   "panels": [
                     {
                       "id": 1,
                       "type": "timeseries",
-                      "title": "Log Volume by Namespace",
+                      "title": "Tetragon Events by Type",
                       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
                       "datasource": "GreptimeDB",
                       "targets": [
                         {
-                          "rawSql": "SELECT date_trunc('minute', greptime_timestamp) AS time, `kubernetes.pod_namespace` AS metric, COUNT(*) AS value FROM k8s_logs WHERE $__timeFilter(greptime_timestamp) GROUP BY 1, 2 ORDER BY 1 ASC",
+                          "rawSql": "SELECT date_trunc('minute', greptime_timestamp) AS time, event_type AS metric, COUNT(*) AS value FROM tetragon_logs WHERE $__timeFilter(greptime_timestamp) GROUP BY 1, 2 ORDER BY 1 ASC",
                           "format": "time_series",
                           "refId": "A"
                         }
@@ -308,12 +352,12 @@ spec:
                     {
                       "id": 2,
                       "type": "table",
-                      "title": "Recent Logs",
+                      "title": "Recent Tetragon Events",
                       "gridPos": { "h": 14, "w": 24, "x": 0, "y": 8 },
                       "datasource": "GreptimeDB",
                       "targets": [
                         {
-                          "rawSql": "SELECT greptime_timestamp AS time, `kubernetes.pod_namespace` AS namespace, `kubernetes.pod_name` AS pod, `kubernetes.container_name` AS container, stream, message FROM k3s_logs WHERE $__timeFilter(greptime_timestamp) ORDER BY greptime_timestamp DESC LIMIT 500",
+                          "rawSql": "SELECT greptime_timestamp AS time, event_type, node_name, namespace, pod_name, container_name, binary, arguments, parent_binary, user_id FROM tetragon_logs WHERE $__timeFilter(greptime_timestamp) ORDER BY greptime_timestamp DESC LIMIT 500",
                           "format": "table",
                           "refId": "A"
                         }
