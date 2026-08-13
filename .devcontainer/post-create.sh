@@ -8,7 +8,7 @@ WORKSPACE=/workspaces/sakura-talos-argocd
 # ---------------------------------------------------------------
 cat << 'INNER_EOF' >> ~/.bashrc
 # Export TF_VAR_ variables from Codespaces secrets
-for var in OMNI_ENDPOINT OMNI_SERVICE_ACCOUNT_KEY TALOS_VERSION KUBERNETES_VERSION CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ACCESS_TOKEN SAKURA_ACCESS_TOKEN SAKURA_ACCESS_TOKEN_SECRET SAKURA_LABEL_PREFIX SAKURA_REGION SAKURA_SERVER_CPU SAKURA_SERVER_MEMORY SAKURA_SERVER_COMMITMENT SAKURA_SERVER_CPU_MODEL DOMAIN LE_ENVIRONMENT SAKURA_ISO_IMAGE_ID GH_ORGANIZATION GH_CLIENT_ID_GRAFANA GH_CLIENT_SECRET_GRAFANA GH_CLIENT_ID_ARGOCD GH_CLIENT_SECRET_ARGOCD AUTO_SHUTDOWN_AT_UTC; do
+for var in TALOS_VERSION KUBERNETES_VERSION CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ACCESS_TOKEN SAKURA_ACCESS_TOKEN SAKURA_ACCESS_TOKEN_SECRET SAKURA_LABEL_PREFIX SAKURA_REGION SAKURA_SERVER_CPU SAKURA_SERVER_MEMORY SAKURA_SERVER_COMMITMENT SAKURA_SERVER_CPU_MODEL DOMAIN LE_ENVIRONMENT SAKURA_ISO_IMAGE_ID GH_ORGANIZATION GH_CLIENT_ID_GRAFANA GH_CLIENT_SECRET_GRAFANA GH_CLIENT_ID_ARGOCD GH_CLIENT_SECRET_ARGOCD AUTO_SHUTDOWN_AT_UTC; do
     if [ -n "${!var}" ]; then
         export TF_VAR_$(echo "$var" | tr '[:upper:]' '[:lower:]')="${!var}"
     fi
@@ -46,9 +46,9 @@ else
 fi
 
 # ---------------------------------------------------------------
-# talosctl / omnictl インストール
+# talosctl インストール
 # ---------------------------------------------------------------
-TALOS_VERSION="${TALOS_VERSION:-v1.9.0}"
+TALOS_VERSION="${TALOS_VERSION:-v1.13.8}"
 TALOSCTL_ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 echo "==> talosctl ${TALOS_VERSION} をインストール中..."
 curl -sfL "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-${TALOSCTL_ARCH}" \
@@ -56,14 +56,6 @@ curl -sfL "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION
 sudo install -o root -g root -m 0755 /tmp/talosctl /usr/local/bin/talosctl
 rm -f /tmp/talosctl
 talosctl version --client
-
-OMNICTL_ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-echo "==> omnictl をインストール中..."
-curl -sfL "https://github.com/siderolabs/omni/releases/latest/download/omnictl-linux-${OMNICTL_ARCH}" \
-  -o /tmp/omnictl
-sudo install -o root -g root -m 0755 /tmp/omnictl /usr/local/bin/omnictl
-rm -f /tmp/omnictl
-omnictl version || true
 
 # ---------------------------------------------------------------
 # crane (go-containerregistry) インストール

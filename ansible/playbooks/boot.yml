@@ -9,35 +9,25 @@
     - packet_filter_ssh_allow
 
   tasks:
-    # omni_join_config が provider (v0.1.0-alpha.3) で使えないため、
-    # Talos インストールイメージは terraform ではなく omnictl で直接取得する。
-    # ノードごとの個別ダウンロードは boot_node role (ステップ5) で行う。
     - name: Ensure rendered directory exists
       ansible.builtin.file:
         path: "{{ rendered_dir }}"
         state: directory
         mode: "0750"
 
-    - name: Check existing Omni installation media presets
-      ansible.builtin.command:
-        cmd: omnictl media preset list
-      environment:
-        OMNI_ENDPOINT: "{{ tf_outputs.omni_endpoint.value }}"
-        OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') }}"
-      register: _media_preset_list
-      changed_when: false
-
-    - name: Create Omni installation media preset for Talos install image
-      ansible.builtin.command:
-        cmd: >
-          omnictl media preset create talos-install
-          --arch amd64
-          --talos-version {{ talos_version }}
-          --initial-labels sakura.io/cluster={{ tf_outputs.omni_cluster_id.value }}
-      environment:
-        OMNI_ENDPOINT: "{{ tf_outputs.omni_endpoint.value }}"
-        OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') }}"
-      when: "'talos-install' not in _media_preset_list.stdout"
+    - name: Allow Talos and Kubernetes APIs from the control host
+      ops_frontier.provider.sakura_packet_filter:
+        packet_filter_id: "{{ tf_outputs.packet_filter_id.value }}"
+        state: present
+        rule_type: tcp
+        port: "{{ item }}"
+        source_network: "{{ my_ip }}"
+        api_base: "{{ sakura_api_base }}"
+        token: "{{ sakura_access_token }}"
+        secret: "{{ sakura_access_token_secret }}"
+      loop:
+        - "50000"
+        - "6443"
 
     - name: Add server hosts dynamically
       ansible.builtin.add_host:
@@ -48,6 +38,10 @@
         my_ip: "{{ my_ip }}"
       loop: "{{ tf_outputs.node_public_ips.value | dict2items }}"
 
+    - name: Generate standalone Talos configurations
+      ansible.builtin.include_role:
+        name: talos_config
+
 - name: Boot each node (Talos install)
   hosts: _boot_servers
   gather_facts: false
@@ -55,32 +49,134 @@
   roles:
     - boot_node
 
-- name: Assign joined nodes to the Omni cluster
+- name: Bootstrap the standalone Talos cluster
   hosts: localhost
   gather_facts: false
   roles:
     - terraform_outputs
+  vars:
+    _bootstrap_node: "{{ tf_outputs.node_public_ips.value['sv1'] }}"
+    _local_kubeconfig: /tmp/talos-kubeconfig.yaml
   tasks:
-    - name: Apply Terraform after nodes join Omni
-      community.general.terraform:
-        project_path: "{{ terraform_dir }}"
-        state: present
-        force_init: true
-
-    - name: Wait for the Omni cluster to be ready
+    - name: Bootstrap etcd on the first control plane node
       ansible.builtin.command:
-        cmd: >
-          omnictl get clusterstatus
-          {{ tf_outputs.omni_cluster_id.value }}
-          -o jsonpath='{.spec.ready}'
-      environment:
-        OMNI_ENDPOINT: "{{ tf_outputs.omni_endpoint.value }}"
-        OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') }}"
-      register: _omni_cluster_status
-      until: _omni_cluster_status.rc == 0 and 'true' in _omni_cluster_status.stdout
+        argv:
+          - talosctl
+          - bootstrap
+          - --talosconfig
+          - "{{ talosconfig_path }}"
+          - --nodes
+          - "{{ _bootstrap_node }}"
+          - --endpoints
+          - "{{ _bootstrap_node }}"
+      register: _talos_bootstrap
+      changed_when: _talos_bootstrap.rc == 0
+      failed_when: >-
+        _talos_bootstrap.rc != 0 and
+        'already bootstrapped' not in (_talos_bootstrap.stderr | lower)
+
+    - name: Fetch Kubernetes kubeconfig through the Talos API
+      ansible.builtin.command:
+        argv:
+          - talosctl
+          - kubeconfig
+          - "{{ _local_kubeconfig }}"
+          - --talosconfig
+          - "{{ talosconfig_path }}"
+          - --nodes
+          - "{{ _bootstrap_node }}"
+          - --endpoints
+          - "{{ _bootstrap_node }}"
+          - --force
+      register: _talos_kubeconfig
+      until: _talos_kubeconfig.rc == 0
+      retries: 60
+      delay: 10
+      changed_when: true
+
+    - name: Set the externally reachable Kubernetes API endpoint
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - config
+          - set-cluster
+          - "{{ talos_cluster_name }}"
+          - "--server=https://{{ _bootstrap_node }}:6443"
+          - --kubeconfig
+          - "{{ _local_kubeconfig }}"
+      changed_when: true
+
+    - name: Wait for the Kubernetes API to be ready
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ _local_kubeconfig }}"
+          - get
+          - --raw=/readyz
+      register: _kubernetes_api_ready
+      until: _kubernetes_api_ready.rc == 0
       retries: 60
       delay: 10
       changed_when: false
+
+    - name: Install Cilium CNI
+      kubernetes.core.helm:
+        name: cilium
+        chart_ref: cilium
+        chart_repo_url: https://helm.cilium.io/
+        chart_version: "1.20.0"
+        release_namespace: kube-system
+        kubeconfig: "{{ _local_kubeconfig }}"
+        state: present
+        wait: true
+        wait_timeout: 10m
+        values:
+          ipam:
+            mode: kubernetes
+          kubeProxyReplacement: true
+          k8sServiceHost: localhost
+          k8sServicePort: 7445
+          cgroup:
+            autoMount:
+              enabled: false
+            hostRoot: /sys/fs/cgroup
+          securityContext:
+            capabilities:
+              ciliumAgent:
+                - CHOWN
+                - KILL
+                - NET_ADMIN
+                - NET_RAW
+                - IPC_LOCK
+                - SYS_ADMIN
+                - SYS_RESOURCE
+                - DAC_OVERRIDE
+                - FOWNER
+                - SETGID
+                - SETUID
+              cleanCiliumState:
+                - NET_ADMIN
+                - SYS_ADMIN
+                - SYS_RESOURCE
+
+    - name: Wait for all Kubernetes nodes to be ready
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ _local_kubeconfig }}"
+          - wait
+          - --for=condition=Ready
+          - nodes
+          - --all
+          - --timeout=10m
+      changed_when: false
+
+    - name: Remove temporary kubeconfig
+      ansible.builtin.file:
+        path: "{{ _local_kubeconfig }}"
+        state: absent
 
 - name: Close SSH access after Talos installation
   hosts: localhost

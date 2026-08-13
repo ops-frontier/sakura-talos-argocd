@@ -28,24 +28,10 @@ variable "cloudflare_access_token" {
   sensitive   = true
 }
 
-# ---------------------------------------------------------------
-# Sidero Talos Omni
-# ---------------------------------------------------------------
-variable "omni_endpoint" {
-  description = "Sidero Talos Omni のエンドポイント URL"
-  type        = string
-}
-
-variable "omni_service_account_key" {
-  description = "Sidero Talos Omni のサービスアカウントキー (Terraform provider 認証用)"
-  type        = string
-  sensitive   = true
-}
-
 variable "talos_version" {
   description = "Talos Linux のバージョン"
   type        = string
-  default     = "v1.9.0"
+  default     = "v1.13.8"
 }
 
 variable "kubernetes_version" {

@@ -1,8 +1,7 @@
 # ---------------------------------------------------------------
 # Cilium (CNI + kube-proxy replacement + 割り当てIPインターセプト)
 # 注意: Cilium のインストール・アップグレードは ArgoCD ではなく
-# Sidero Talos Omni のクラスタ定義 (terraform/omni.tf の cni ブロック) が
-# ノード起動時に自動的に行う。ここでは Cilium 自体の Application は
+# boot playbook がクラスタ初期化時に行う。ここでは Cilium 自体の Application は
 # 定義しない (cilium-assigned-ips.yaml.j2 で固定IP割り当てのみ管理する)。
 # ---------------------------------------------------------------
 # ---------------------------------------------------------------
@@ -343,7 +342,7 @@ spec:
                       "datasource": "GreptimeDB",
                       "targets": [
                         {
-                          "rawSql": "SELECT date_trunc('minute', greptime_timestamp) AS time, event_type AS metric, COUNT(*) AS value FROM tetragon_logs WHERE $__timeFilter(greptime_timestamp) GROUP BY 1, 2 ORDER BY 1 ASC",
+                          "rawSql": "SELECT to_unixtime(date_trunc('minute', greptime_timestamp)) AS time, event_type AS metric, COUNT(*) AS value FROM tetragon_logs WHERE $__timeFilter(greptime_timestamp) GROUP BY 1, 2 ORDER BY 1 ASC",
                           "format": "time_series",
                           "refId": "A"
                         }
@@ -357,7 +356,7 @@ spec:
                       "datasource": "GreptimeDB",
                       "targets": [
                         {
-                          "rawSql": "SELECT greptime_timestamp AS time, event_type, node_name, namespace, pod_name, container_name, binary, arguments, parent_binary, user_id FROM tetragon_logs WHERE $__timeFilter(greptime_timestamp) ORDER BY greptime_timestamp DESC LIMIT 500",
+                          "rawSql": "SELECT to_unixtime(greptime_timestamp) AS time, event_type, node_name, namespace, pod_name, container_name, binary, arguments, parent_binary, user_id FROM tetragon_logs WHERE $__timeFilter(greptime_timestamp) ORDER BY greptime_timestamp DESC LIMIT 500",
                           "format": "table",
                           "refId": "A"
                         }

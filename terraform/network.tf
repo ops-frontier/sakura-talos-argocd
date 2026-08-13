@@ -2,16 +2,23 @@
 # さくらのクラウド ロードバランサ (L4)
 # ---------------------------------------------------------------
 
+removed {
+  from = sakuracloud_internet.lb_router
+
+  lifecycle {
+    destroy = false
+  }
+}
+
 # ルータ + スイッチ (LB 用グローバルIP)
-resource "sakuracloud_internet" "lb_router" {
-  name        = "${var.sakura_label_prefix}-lb-router"
-  netmask     = 28
-  band_width  = 100
-  description = "LB 用 グローバル IP ルータ"
+data "sakuracloud_internet" "lb_router" {
+  filter {
+    names = ["${var.sakura_label_prefix}-lb-router"]
+  }
 }
 
 locals {
-  lb_cidr    = "${sakuracloud_internet.lb_router.network_address}/${sakuracloud_internet.lb_router.netmask}"
+  lb_cidr    = "${data.sakuracloud_internet.lb_router.network_address}/${data.sakuracloud_internet.lb_router.netmask}"
   lb_mgmt_ip = cidrhost(local.lb_cidr, 4) # LB 管理 IP
   lb_vip_ip  = cidrhost(local.lb_cidr, 5) # VIP (DNS が指すパブリック IP)
 }
@@ -22,11 +29,11 @@ resource "sakuracloud_load_balancer" "lb" {
   plan        = "standard"
 
   network_interface {
-    switch_id    = sakuracloud_internet.lb_router.switch_id
+    switch_id    = data.sakuracloud_internet.lb_router.switch_id
     vrid         = 1
     ip_addresses = [local.lb_mgmt_ip]
-    netmask      = sakuracloud_internet.lb_router.netmask
-    gateway      = sakuracloud_internet.lb_router.gateway
+    netmask      = data.sakuracloud_internet.lb_router.netmask
+    gateway      = data.sakuracloud_internet.lb_router.gateway
   }
 
   # HTTPS VIP

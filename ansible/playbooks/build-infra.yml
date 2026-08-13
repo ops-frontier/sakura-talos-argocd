@@ -51,6 +51,17 @@
         my_ip: "{{ my_ip }}"
       loop: "{{ tf_outputs.node_public_ips.value | dict2items }}"
 
+- name: Remove stale SSH host keys
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Remove old known_hosts entry for each server
+      ansible.builtin.known_hosts:
+        name: "{{ hostvars[item].ansible_host }}"
+        state: absent
+        path: "{{ known_hosts_path }}"
+      loop: "{{ groups['servers'] }}"
+
 - name: Wait for Ubuntu SSH and install talosctl
   hosts: servers
   gather_facts: false
@@ -58,13 +69,6 @@
   vars:
     ansible_python_interpreter: /usr/bin/python3
   tasks:
-    - name: Remove old known_hosts entry for this host
-      ansible.builtin.known_hosts:
-        name: "{{ ansible_host }}"
-        state: absent
-        path: "{{ known_hosts_path }}"
-      delegate_to: localhost
-
     - name: Wait for Ubuntu SSH
       ansible.builtin.command:
         cmd: >

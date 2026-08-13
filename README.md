@@ -14,11 +14,11 @@
 - ロードバランサの設定をコントローラから行うさくらのクラウド用 CCM を開発してインストールする
 - eBPF として Tetragon を導入する
 - ログの解析のために vector, greptimeDB, grafana を導入する
-- サーバはパケットフィルタで SSH ポートを開放しない。ノードは起動時に SideroLink を使って Sidero Talos Omni へ能動的に接続し、Omni 経由でのみ管理する (SSH 接続は一切行わない)
+- サーバは Talos API と Kubernetes API を mTLS で管理する。管理ポートは Ansible 実行元のグローバル IP にのみ許可し、SSH はインストール作業時以外は開放しない
 
 ## 構築ツール
 
-IaC のツールとしては、Terraform, Ansible を使用する。ディスクイメージの作成には talosctl (Imager) を使用する。
+IaC のツールとしては、Terraform, Ansible を使用する。ディスクイメージの作成には Sidero Labs 公式 imager コンテナを使用する。
 
 ### パラメータ
 
@@ -26,9 +26,7 @@ IaC のツールとしては、Terraform, Ansible を使用する。ディスク
 
 |環境変数名|意味|例|デフォルト/必須|
 |--|--|--|--|
-|OMNI_ENDPOINT|Sidero Talos Omni のエンドポイント URL|https://ops-frontier.omni.siderolabs.io|必須|
-|OMNI_SERVICE_ACCOUNT_KEY|Sidero Talos Omni のサービスアカウントキー (Terraform provider / omnictl 認証用)|eyJ..X14|必須|
-|TALOS_VERSION|Talos Linux のバージョン|v1.9.0|v1.9.0|
+|TALOS_VERSION|Talos Linux のバージョン|v1.13.8|v1.13.8|
 |KUBERNETES_VERSION|Talos に組み込む Kubernetes のバージョン|v1.31.1|v1.31.1|
 |SAKURA_ACCESS_TOKEN|さくらのクラウドのAPIキーのアクセストークン|23DF..X14|必須|
 |SAKURA_ACCESS_TOKEN_SECRET|さくらのクラウドのAPIキーのアクセストークンのシークレット|23DF..X14|必須|
@@ -59,7 +57,7 @@ IaC のツールとしては、Terraform, Ansible を使用する。ディスク
 terraform でサーバを3台を SAKURA_REGION で指定されたリージョンに構築する。各サーバには以下の2枚のディスクを接続する。
 
 - **ブートストラップディスク (20GB)**: Ubuntu 22.04 LTS パブリックアーカイブから作成。ディスク修正 API でグローバル IP と SSH 公開鍵を設定して起動する。Talos Linux のインストール作業環境として使用する。
-- **ターゲットディスク (40GB)**: 未フォーマットの SSD。talosctl (Imager) で生成した Talos Linux のディスクイメージを `dd` で書き込む先。
+- **ターゲットディスク (40GB)**: 未フォーマットの SSD。公式 imager コンテナで生成した Talos Linux のディスクイメージを `dd` で書き込む先。
 
 さくらのクラウドの API でディスクの順序を入れ替えることで、Ubuntu と Talos のどちらから起動するかを選択できる。これにより、サーバを再構築せずにインストール処理をデバッグできる。
 
@@ -73,13 +71,13 @@ ssh のペア鍵は terraform でオンデマンドに生成する。Ubuntu ブ�
 2. パケットフィルタで 22 番ポートの tcp 接続を開発環境の IP のみ許可する
 3. Ubuntu ブートストラップディスクに対して SSH 接続し、Talos Linux のディスクイメージを書き込む
 
-Talos Linux には sshd が存在せず、SSH 接続は一切行わない。Talos 起動後は SideroLink 経由で Sidero Talos Omni に能動的に接続し、以降のクラスタ操作 (kubeconfig の取得、状態確認など) はすべて Omni の管理 API (`omnictl`) 経由で行う (詳細は [TALOS.md](./TALOS.md) を参照)。ブートストラップ作業完了後はパケットフィルタの SSH 許可ルールを解除するため、恒常的に SSH 用ポートを開放する必要はない。
+Talos Linux には sshd が存在せず、SSH 接続は一切行わない。Talos 起動後のクラスタ操作は `talosctl` と Kubernetes kubeconfig の mTLS 認証で行う。Ansible は Talos API (50000/tcp) と Kubernetes API (6443/tcp) を実行元 IP に限定して許可し、SSH 許可ルールはブートストラップ完了後に解除する。
 
 config では `${SAKURA_LABEL_PREFIX}-sv1`, `${SAKURA_LABEL_PREFIX}-sv2`, `${SAKURA_LABEL_PREFIX}-sv3` のホスト名でアクセスできるようにする。
 
 ### 初期インストール
 
-初期インストールは talosctl (Imager) を使用する。Sidero Talos Omni のクラスタ定義から、SideroLink の Join Config を組み込んだ Talos Linux のディスクイメージ (raw) を生成する。`boot` が Ubuntu 上でこのイメージをダウンロードし、ターゲットディスクに `dd` で書き込む。書き込み完了後、ディスク順序を入れ替えて Talos Linux から起動する。Talos は起動時に SideroLink 経由で能動的に Omni へ接続し、マシン設定を取得してクラスタに参加する。
+初期インストールでは、共通 CA とクライアント証明書、ノード固有の machine config を生成する。`boot` が各 Ubuntu 上で公式 imager コンテナを実行し、machine config を埋め込んだ BIOS 対応 metal RAW イメージをターゲットディスクに書き込む。Talos 起動後は `talosctl bootstrap` で etcd を初期化し、Cilium をインストールする。
 
 ### ミドルウェア
 
@@ -87,7 +85,7 @@ config では `${SAKURA_LABEL_PREFIX}-sv1`, `${SAKURA_LABEL_PREFIX}-sv2`, `${SAK
 
 - 全サーバをコントロールプレーン兼ワーカノードとする
 - Embeded DB を全サーバにインストールしクラスタ化する
-- CNI には Cilium を使用する。Cilium と Argo CD は Sidero Talos Omni のクラスタ定義 (CNI 設定 / inline manifest) によりノード起動時に自動的にデプロイされる
+- CNI には Cilium を使用する。Cilium は `boot`、Argo CD は `install-infra-apps` がデプロイする
 - k8s のHelmチャート管理には Argo CD を使用する
 
 ```mermaid
@@ -132,7 +130,7 @@ graph TD
 
 Argo CD を導入して Helm チャートを管理する。 Helm チャートはインフラ層には稼働監視と eBPF が組み込みチャートとしてインストールされる。
 組み込みチャートは外部のコンテナレジストリに登録される。コンテナレジストリは terraform では構築せず、`CR_FQDN` / `CR_USER` / `CR_PASSWORD` の環境変数で接続先とユーザを指定する。
-Argo CD (Omni により自動デプロイ済み) に対して、稼働監視とeBPF のチャートをビルドし、コンテナレジストリに push しておく。ArgoCDにはコンテナレジストリのタグを登録する。登録後 OCI でチャートを pull して初期化する。
+Argo CD に対して、稼働監視とeBPF のチャートをビルドし、コンテナレジストリに push しておく。ArgoCDにはコンテナレジストリのタグを登録する。登録後 OCI でチャートを pull して初期化する。
 
 ### 稼働監視
 
@@ -154,8 +152,8 @@ Tetragonのログを稼働監視で収集できるように Chart の ConfigMap 
 
 ### アップデート
 
-- OS については Talos Linux 組み込みの A/B アトミックアップデートを Sidero Talos Omni 経由で行う
-- k8s については Sidero Talos Omni からの `talosctl upgrade-k8s` 相当の操作でバージョンアップを行う
+- OS については Talos Linux 組み込みの A/B アトミックアップデートを `talosctl upgrade` で行う
+- k8s については `talosctl upgrade-k8s` でバージョンアップを行う
 - OS と k8s の更新のタイミングを揃えることでセキュリティパッチのためのコンテナ再起動回数を最小限にする
 
 ## 構築手順
@@ -183,18 +181,10 @@ Tetragonのログを稼働監視で収集できるように Chart の ConfigMap 
      - Homepage URL: `https://grafana.poc.${DOMAIN}` (例: `https://grafana.poc.example.com`)
      - Authorization callback URL: `https://grafana.poc.${DOMAIN}/login/github`
    - 生成された **Client ID** を `GH_CLIENT_ID_GRAFANA`、**Client Secret** を `GH_CLIENT_SECRET_GRAFANA` として控えます。
-4. **Sidero Talos Omni**
-   - サーバへの SSH 接続を行わず SideroLink 経由でのみノードを管理するため、事前に Sidero Talos Omni へのサインアップが必要です。
-   - Omni の Web UI (`https://<アカウント名>.omni.siderolabs.io`) からアカウントを作成し、エンドポイント URL を `OMNI_ENDPOINT` として控えます。
-   - Web UI の `Settings` > `Service Accounts` からサービスアカウントを作成し、発行されたキーを `OMNI_SERVICE_ACCOUNT_KEY` として控えます (Terraform provider と `omnictl` の認証に使用します)。
-   - 詳細な手順は [TALOS.md](./TALOS.md) を参照してください。
-
 ### 2. GitHub Codespaces の起動と環境変数設定
 
 1. 対象のリポジトリ（本リポジトリ）の Settings ページから `Secrets and variables` > `Codespaces` を開き、以下の環境変数 (Secrets) を登録します。
 
-   - `OMNI_ENDPOINT`: Sidero Talos Omni のエンドポイント URL (必須)
-   - `OMNI_SERVICE_ACCOUNT_KEY`: Sidero Talos Omni のサービスアカウントキー (必須)
    - `SAKURA_ACCESS_TOKEN`: さくらのクラウド API キーのアクセストークン (必須)
    - `SAKURA_ACCESS_TOKEN_SECRET`: さくらのクラウド API キーのアクセストークンのシークレット (必須)
    - `CLOUDFLARE_ACCOUNT_ID`: Cloudflare アカウント ID (必須)
@@ -214,55 +204,76 @@ Tetragonのログを稼働監視で収集できるように Chart の ConfigMap 
    - `post-create.sh` により各 Ansible playbook の alias が `~/.bashrc` に設定され、playbook 名（拡張子なし）のコマンドが使えるようになります。
    - 上記で設定した環境変数は、すべて `TF_VAR_` プレフィックスが付与されて Terraform 用の変数として自動認識されます。
 
-### 3. Terraform 初期化
+### 3. LB ルータの構築
+
+LB 用のルータは本体とは別の Terraform state で管理する。初回のみ、次のコマンドで構築する。
+
+```bash
+cd terraform-lb-router && terraform init && terraform apply && cd ..
+```
+
+既存環境では、新しいルータを作成せず、既存の LB ルータ ID を指定して独立した state に取り込む。
+
+```bash
+cd terraform-lb-router && terraform init
+terraform import sakuracloud_internet.lb_router <既存の LB ルータ ID>
+cd ..
+```
+
+### 4. Terraform 初期化
+
 ```bash
 cd terraform && terraform init && cd ..
 ```
 
-### 4. インフラ構築
+### 5. インフラ構築
 
-Ubuntu サーバのプロビジョニング、SSH パケットフィルタの設定、talosctl のインストールを行う。
+Ubuntu サーバをプロビジョニングし、公式 imager の実行に必要な Docker とイメージ書き込みツールを導入する。
 
 ```bash
 build-infra
 ```
 
-### 5. Talos Linux のインストールと起動
+### 6. Talos Linux のインストールと起動
 
-各サーバに Talos Linux のディスクイメージを書き込んで起動する。k8s と Cilium、ArgoCD は Sidero Talos Omni のクラスタ定義に基づき起動後に自動インストールされる。
+各サーバにホスト固有の machine config を埋め込んだ Talos Linux のディスクイメージを書き込んで起動する。続けて etcd を bootstrap し、Cilium をインストールする。
 
 ```bash
 boot
 ```
 
-### 6. クラスタの確認
+### 7. クラスタの確認
 
-インストールには数分かかる。Talos Linux には SSH が存在しないため、サーバ起動後は SideroLink 経由で Sidero Talos Omni に自動登録される。Omni の Web UI、または `omnictl` から状態を確認する。
+インストールには数分かかる。生成された `rendered/talos/talosconfig` のクライアント証明書を使い、Talos API から状態を確認する。
 
 ```bash
-omnictl get machinestatus
-omnictl get clusterstatus {{ SAKURA_LABEL_PREFIX }}
+NODE=$(terraform -chdir=terraform output -json node_public_ips | jq -r .sv1)
+talosctl --talosconfig rendered/talos/talosconfig \
+   --nodes "${NODE}" --endpoints "${NODE}" health
 ```
 
-ArgoCD の Pod が起動していることを確認するには、`omnictl` から取得した kubeconfig を使用する。
+Kubernetes の状態は Talos API から取得した kubeconfig で確認する。
 
 ```bash
-omnictl kubeconfig --cluster ${SAKURA_LABEL_PREFIX} ~/.kube/config
+talosctl --talosconfig rendered/talos/talosconfig \
+   --nodes "${NODE}" --endpoints "${NODE}" kubeconfig ~/.kube/config --force
+kubectl config set-cluster "${SAKURA_LABEL_PREFIX:-ops-frontier}" \
+   --server="https://${NODE}:6443" --kubeconfig ~/.kube/config
 export KUBECONFIG=~/.kube/config
-kubectl get pods -n argocd
 kubectl get nodes
+kubectl get pods -n kube-system -l k8s-app=cilium
 ```
 
-### 7. ArgoCD ブートストラップ (install-infra-apps)
+### 8. ArgoCD ブートストラップ (install-infra-apps)
 
-YAML テンプレートをレンダリングし、Omni から取得した kubeconfig を用いて ArgoCD に App of Apps と各種マニフェストを適用する。このコマンドは Codespace から実行する。
+YAML テンプレートをレンダリングし、Talos API から取得した kubeconfig を用いて ArgoCD に App of Apps と各種マニフェストを適用する。このコマンドは Codespace から実行する。
 
 ```bash
 install-infra-apps
 ```
 
 実行内容:
-1. `omnictl` 経由でクラスタの kubeconfig を取得
+1. `talosctl` の mTLS 認証でクラスタの kubeconfig を取得
 2. `argocd/manifests/*.yaml.j2` および `argocd/apps/infra-apps.yaml.j2` を Jinja2 でレンダリングし `rendered/` に出力
 3. 以下のマニフェストを適用:
    - `rendered/argocd-config.yaml` — GitHub OAuth + Ingress 設定

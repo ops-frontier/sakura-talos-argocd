@@ -5,13 +5,11 @@
 #   - tf_outputs ファクトが設定済み (terraform_outputs role を事前に実行)
 #   - ansible_host が正しく設定済み (set_ansible_host role を事前に実行)
 #   - my_ip ファクトが設定済み (get_my_ip role を事前に実行)
-#   - omnictl media preset "talos-install" が作成済み (boot.yml の
-#     localhost タスクで作成)
+#   - talos_config role でノードごとの machine config が作成済み
 #
 # Talos Linux には sshd が存在しないため、ターゲットディスク起動後の
 # 状態確認や設定投入は SSH では行わない。ターゲットディスク上の Talos は
-# 起動時に SideroLink 経由で能動的に Sidero Talos Omni へ接続し、
-# マシン設定・Cilium・ArgoCD を自動的に取得・デプロイする。
+# 起動時に埋め込み済みの machine config を適用する。
 # このロールが SSH を使用するのは Ubuntu ブートストラップディスクに
 # 対してのみである。
 #
@@ -92,7 +90,7 @@
   ops_frontier.provider.sakura_server_power:
     server_id: "{{ _server_info_pre_swap.server.id }}"
     state: on
-    timeout: 600
+    timeout: 1200
     api_base: "{{ sakura_api_base }}"
     token: "{{ sakura_access_token }}"
     secret: "{{ sakura_access_token_secret }}"
@@ -134,19 +132,17 @@
   retries: 30
   delay: 10
 
+- name: Ensure the Talos imager runtime is ready
+  ansible.builtin.include_role:
+    name: install_talos_deps
+
 # ---------------------------------------------------------------
-# 5. Talos インストールイメージをノードごとに、対象 Ubuntu サーバ上の
-#    omnictl (install_talos_deps role で導入済み) で直接ダウンロードし、
-#    同じサーバ上でターゲットディスクに書き込む (localhost への delegate は
-#    行わない)。ノードごとに一意のラベル (sakura.io/hostname) を付与し、
-#    ステップ7 の Omni 登録確認でこのノードを一意に特定できるようにする。
-#    SideroLink Join Config が組み込まれているため、起動するだけで Talos が
-#    Omni に能動的に接続する。
+# 5. Talos インストールイメージをノードごとに公式 imager で作成し、
+#    ターゲットディスクに書き込む。
 #
 #    さくらのクラウドのスイッチは DHCP を提供しない (Ubuntu 側も cloud-init
 #    で固定IPを設定している) ため、Talos にも起動時点で固定IPを設定する
-#    必要がある。Omni 接続 (SideroLink) 前なので machine config 経由の
-#    設定は使えず、カーネルパラメータ ip= で起動時に設定する。
+#    必要があるため、カーネルパラメータ ip= でも起動時に設定する。
 #    NOTE: eth0 = NIC0 (LB ルータ側/パブリック), eth1 = NIC1 (内部) という
 #    Talos の legacy インターフェース命名を前提にしている。実機で異なる場合は
 #    コンソールの F3 (Network Config) で実際のインターフェース名を確認して
@@ -163,33 +159,73 @@
       - "ip={{ tf_outputs.node_public_ips.value[inventory_hostname] }}::{{ tf_outputs.lb_gateway.value }}:{{ _wan_netmask }}:{{ inventory_hostname }}:eth0:off:8.8.8.8:1.1.1.1"
       - "ip={{ tf_outputs.node_private_ips.value[inventory_hostname] }}:::{{ _internal_netmask }}:{{ inventory_hostname }}:eth1:off"
 
-- name: Download Talos install image for this node via omnictl
+- name: Copy this node's machine configuration to Ubuntu
+  ansible.builtin.copy:
+    src: "{{ talos_config_dir }}/{{ inventory_hostname }}.yaml"
+    dest: /tmp/controlplane.yaml
+    mode: "0600"
+  vars:
+    ansible_user: "{{ ubuntu_ssh_user }}"
+    ansible_ssh_private_key_file: "{{ ssh_key_path }}"
+    ansible_python_interpreter: /usr/bin/python3
+
+- name: Ensure Talos imager output directory exists
+  ansible.builtin.file:
+    path: /tmp/talos-imager
+    state: directory
+    mode: "0700"
+  vars:
+    ansible_user: "{{ ubuntu_ssh_user }}"
+    ansible_ssh_private_key_file: "{{ ssh_key_path }}"
+    ansible_python_interpreter: /usr/bin/python3
+
+- name: Remove stale Talos image output
+  ansible.builtin.file:
+    path: /tmp/talos-imager/metal-amd64.raw.zst
+    state: absent
+  vars:
+    ansible_user: "{{ ubuntu_ssh_user }}"
+    ansible_ssh_private_key_file: "{{ ssh_key_path }}"
+    ansible_python_interpreter: /usr/bin/python3
+
+- name: Build this node's Talos raw image with the official imager
   ansible.builtin.command:
-    cmd: >
-      omnictl media download talos-install
-      --format raw
-      --initial-labels sakura.io/cluster={{ tf_outputs.omni_cluster_id.value }}
-      --initial-labels sakura.io/hostname={{ inventory_hostname }}
-      --extra-kernel-args "net.ifnames=0"
-      --extra-kernel-args "{{ _talos_network_kernel_args[0] }}"
-      --extra-kernel-args "{{ _talos_network_kernel_args[1] }}"
-      --output /tmp/talos-install-{{ inventory_hostname }}.raw.xz
-  environment:
-    OMNI_ENDPOINT: "{{ tf_outputs.omni_endpoint.value }}"
-    OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') }}"
-  # args:
-  #   creates: "/tmp/talos-install-{{ inventory_hostname }}.raw.xz"
+    argv:
+      - sudo
+      - docker
+      - run
+      - --rm
+      - --privileged
+      - -v
+      - /tmp/controlplane.yaml:/secure/controlplane.yaml:ro
+      - -v
+      - /tmp/talos-imager:/out
+      - -v
+      - /dev:/dev
+      - "ghcr.io/siderolabs/imager:{{ talos_version }}"
+      - metal
+      - --arch
+      - amd64
+      - --extra-kernel-arg
+      - net.ifnames=0
+      - --extra-kernel-arg
+      - "{{ _talos_network_kernel_args[0] }}"
+      - --extra-kernel-arg
+      - "{{ _talos_network_kernel_args[1] }}"
+      - --embedded-config-path
+      - /secure/controlplane.yaml
   vars:
     ansible_user: "{{ ubuntu_ssh_user }}"
     ansible_ssh_private_key_file: "{{ ssh_key_path }}"
     ansible_python_interpreter: /usr/bin/python3
   changed_when: true
+  no_log: true
 
 - name: Write Talos install image to target disk (may take several minutes)
   ansible.builtin.shell:
     cmd: |
       set -e -o pipefail
-      xz -dc "/tmp/talos-install-{{ inventory_hostname }}.raw.xz" | sudo dd of=/dev/vdb bs=4M conv=fsync status=progress
+      zstd -dc /tmp/talos-imager/metal-amd64.raw.zst | sudo dd of=/dev/vdb bs=4M conv=fsync status=progress
     executable: /bin/bash
   vars:
     ansible_user: "{{ ubuntu_ssh_user }}"
@@ -210,6 +246,10 @@
     api_base: "{{ sakura_api_base }}"
     token: "{{ sakura_access_token }}"
     secret: "{{ sakura_access_token_secret }}"
+  register: _power_off_result
+  retries: 5
+  delay: 10
+  until: _power_off_result is succeeded
   delegate_to: localhost
 
 - name: Refresh server info after install
@@ -238,48 +278,33 @@
     api_base: "{{ sakura_api_base }}"
     token: "{{ sakura_access_token }}"
     secret: "{{ sakura_access_token_secret }}"
-  delegate_to: localhost
-
-# ---------------------------------------------------------------
-# 7. Talos 起動確認
-#    SSH は使用できないため、SideroLink 経由で Omni に登録されたことを
-#    omnictl (localhost から) で確認する。sakura.io/hostname ラベルは
-#    machine ではなく machinestatus リソースに付与されるため、
-#    machinestatus を -l で検索してマシン ID を特定し、spec.connected
-#    (Talos の stage は公開されていない) で接続を確認する。
-# ---------------------------------------------------------------
-- name: Get Omni machine ID for this node
-  ansible.builtin.command:
-    cmd: >
-      omnictl get machinestatus
-      -l sakura.io/hostname={{ inventory_hostname }}
-      -o jsonpath='{.metadata.id}'
-  environment:
-    OMNI_ENDPOINT: "{{ tf_outputs.omni_endpoint.value }}"
-    OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') }}"
-  register: _omni_machine
-  delegate_to: localhost
-  until: _omni_machine.rc == 0 and _omni_machine.stdout | trim != ""
-  retries: 60
+  register: _power_on_result
+  retries: 5
   delay: 10
-  changed_when: false
-
-- name: Wait for node to connect to Omni via SideroLink
-  ansible.builtin.command:
-    cmd: >
-      omnictl get machinestatus
-      -o jsonpath='{.spec.connected}'
-      {{ _omni_machine.stdout | trim }}
-  environment:
-    OMNI_ENDPOINT: "{{ tf_outputs.omni_endpoint.value }}"
-    OMNI_SERVICE_ACCOUNT_KEY: "{{ lookup('env', 'OMNI_SERVICE_ACCOUNT_KEY') }}"
-  register: _omni_status
+  until: _power_on_result is succeeded
   delegate_to: localhost
-  until: _omni_status.rc == 0 and 'true' in _omni_status.stdout
+
+# ---------------------------------------------------------------
+# 7. Talos API 起動確認 (mTLS)
+# ---------------------------------------------------------------
+- name: Wait for the Talos API
+  ansible.builtin.command:
+    argv:
+      - talosctl
+      - version
+      - --talosconfig
+      - "{{ talosconfig_path }}"
+      - --nodes
+      - "{{ ansible_host }}"
+      - --endpoints
+      - "{{ ansible_host }}"
+  register: _talos_status
+  delegate_to: localhost
+  until: _talos_status.rc == 0
   retries: 60
   delay: 10
   changed_when: false
 
 - name: Show completion
   ansible.builtin.debug:
-    msg: "{{ inventory_hostname }}: Talos Linux 起動確認 (Omni 登録済み) ✓"
+    msg: "{{ inventory_hostname }}: Talos API 起動確認済み"

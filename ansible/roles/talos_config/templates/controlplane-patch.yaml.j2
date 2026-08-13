@@ -1,0 +1,36 @@
+machine:
+  network:
+    nameservers:
+      - 8.8.8.8
+      - 1.1.1.1
+    interfaces:
+      - interface: eth0
+        addresses:
+          - {{ tf_outputs.node_public_ips.value[talos_node_name] }}/{{ tf_outputs.lb_netmask.value }}
+        routes:
+          - network: 0.0.0.0/0
+            gateway: {{ tf_outputs.lb_gateway.value }}
+        dhcp: false
+      - interface: eth1
+        addresses:
+          - {{ tf_outputs.node_private_ips.value[talos_node_name] }}/24
+        dhcp: false
+  kubelet:
+    nodeIP:
+      validSubnets:
+        - 192.168.100.0/24
+cluster:
+  allowSchedulingOnControlPlanes: true
+  etcd:
+    advertisedSubnets:
+      - 192.168.100.0/24
+  network:
+    cni:
+      name: none
+  proxy:
+    disabled: true
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+auto: off
+hostname: {{ talos_node_name }}

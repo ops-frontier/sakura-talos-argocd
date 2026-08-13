@@ -29,7 +29,7 @@ resource "sakuracloud_ssh_key" "main" {
 # ---------------------------------------------------------------
 resource "sakuracloud_packet_filter" "public" {
   name        = "${var.sakura_label_prefix}-public"
-  description = "パブリックNIC用 パケットフィルタ。インバウンドは HTTP/HTTPS のみ許可"
+  description = "パブリックNIC用。HTTP/HTTPS と構築元限定の管理ポートを許可"
   # サーバに搭載される仮想NICに**着信**するパケットのみを制御する。つまり、サーバからの発信パケットは制御できない。
 
   # インバウンド HTTPS
@@ -48,8 +48,8 @@ resource "sakuracloud_packet_filter" "public" {
     description      = "Inbound HTTP"
   }
 
-  # SSH は build-infra / boot 実行時に packet_filter_ssh_allow ロールが動的に追加し、
-  # 完了後 packet_filter_ssh_deny ロールで解除する。デフォルトは閉じる。
+  # SSH は build-infra / boot 実行時だけ動的に追加する。Talos API (50000) と
+  # Kubernetes API (6443) も Ansible が実行元 IP に限定して動的に追加する。
 
   # IP フラグメントを許可 (大きなパケットの断片化対応)
   expression {
@@ -101,19 +101,6 @@ resource "sakuracloud_packet_filter" "public" {
     destination_port = "32768-60999"
     allow            = true
     description      = "NTP outbound"
-  }
-
-  # SideroLink (Omni WireGuard) アウトバウンド (レスポンス)
-  # omnictl get connectionparams で確認した実際の WireGuard エンドポイント
-  # ポート (UDP 49298) への戻りパケットを許可する。talos.events.sink 等の
-  # [fdae:...]:8090 はこの WireGuard トンネル内部の仮想アドレスであり、
-  # 物理NIC上のパケットフィルタには現れない。
-  expression {
-    protocol         = "udp"
-    source_port      = "49298"
-    destination_port = "32768-60999"
-    allow            = true
-    description      = "SideroLink (Omni WireGuard) outbound"
   }
 
   # ICMP 双方向

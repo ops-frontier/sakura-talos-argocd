@@ -6,10 +6,13 @@ terraform_dir: "{{ workspace_dir }}/terraform"
 ssh_key_path: "{{ workspace_dir }}/.ssh/id_ed25519"
 known_hosts_path: "{{ workspace_dir }}/.ssh/known_hosts"
 rendered_dir: "{{ workspace_dir }}/rendered"
+talos_config_dir: "{{ rendered_dir }}/talos"
+talosconfig_path: "{{ talos_config_dir }}/talosconfig"
+talos_cluster_name: "{{ lookup('env', 'SAKURA_LABEL_PREFIX') or lookup('env', 'TF_VAR_sakura_label_prefix') | default('ops-frontier', true) }}"
 
 infra_apps_chart_name: "infra-apps"
-infra_apps_chart_version: "0.2.12"
-lb_controller_version: "0.1.7"
+infra_apps_chart_version: "0.2.14"
+lb_controller_version: "0.1.8"
 
 ubuntu_ssh_user: "ubuntu"
 
@@ -31,8 +34,12 @@ container_registry_fqdn: "{{ lookup('env', 'CR_FQDN') }}"
 container_registry_user: "{{ lookup('env', 'CR_USER') }}"
 container_registry_password: "{{ lookup('env', 'CR_PASSWORD') }}"
 
-# Talos バージョン (omnictl でのインストールメディア作成に使用)
+# Talos / Kubernetes バージョン
 talos_version: >-
   {{ lookup('env', 'TALOS_VERSION')
      or lookup('env', 'TF_VAR_talos_version')
-     | default('v1.9.0', true) }}
+  | default('v1.13.8', true) }}
+kubernetes_version: >-
+  {{ lookup('env', 'KUBERNETES_VERSION')
+     or lookup('env', 'TF_VAR_kubernetes_version')
+     | default('v1.31.1', true) }}

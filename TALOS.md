@@ -1,43 +1,47 @@
-# Talos Linux
+# Talos スタンドアロンインストール
 
-OS を Flatcar Container Linux から Talos Linux へ変更することにした。この文書ではその変更点を述べる。
+現在の実装では SIDELO Talos Omni に依存しているが、これを脱却する。
 
 ## ディスクイメージの作成方法
 
-boot 時に flatcar-install コマンドの利用をやめて talosctl image (Imager) を使用するように変更する。主に ansible/playbooks/boot.yml とそこから呼び出される role を修正する必要があると推測される。
+boot 時のイメージ作成に omnictl media download talos-install コマンドの利用するのをやめて Sidero Labs 公式の imager ツール（Docker コンテナ）を使用する。BIOS ブートに対応した metal 用の RAW イメージ（.raw）を作成する。主に ansible/playbooks/boot.yml とそこから呼び出される role を修正する必要があると推測される。
 
-### k3s の廃止
+Imager の起動イメージは以下のようなものであると推測される。
+```
+# カレントディレクトリの controlplane.yaml を組み込んで metal 用 RAW イメージを作成
+docker run --rm --privileged -v /dev:/dev -v $(pwd):/secure -v $(pwd)/_out:/out \
+  ghcr.io/siderolabs/imager:v1.13.8 metal \
+  --arch amd64 \
+  --extra-kernel-arg "net.ifnames=0" \
+  --extra-kernel-arg "{{ _talos_network_kernel_args[0] }}" \
+  --extra-kernel-arg "{{ _talos_network_kernel_args[1] }}" \
+  --embedded-config-path /secure/controlplane.yaml
+```
 
-Talos に組み込まれている k8s を使用するため、 k3s はインストールしない。 README.md の ```k3s``` は ```k8s``` に置換したが、 ```k3s.service``` （置換したので```k8s.service```になっている）に関する記述が残っており、削除する必要がある。
+install_talos_deps ロールでは、omnictl のインストールをやめて、Sidero Labs 公式の imager ツール（Docker コンテナ）の起動に必要なパッケージをインストールするようにする。
 
-### butane の廃止
+### config ファイルの作成
 
-butane は使用いないため、 butane のコードと参照する ansible のコードは削除する必要がある。
+config ファイルは ```talosctl config new```コマンドで作成するのと同等のものを ansible のテンプレートで作成する。terraform/omni.tf（削除予定）が参考にできるかもしれない。
+config ファイルは sv1, sv2, sv3 それぞれに固有のものを作成する必要があるかもしれないが、 machine.ca の証明書と秘密鍵は共通のものを設定する必要がある。Codespaces の talosctl から各サーバへは mTLS 認証で接続するため、クライアント証明書を同時に作成しておく必要がある。
 
-## Cilimum, ArgoCD のデプロイ
+## SIDELO Talos Omni クラスタの削除
 
-Cilimum, ArgoCD のインストールは push_infra_apps role から外して SIDELO Talos Omni から設定するように変更する。OSの起動時に SIDELO Talos Omni に能動的に接続し、コンフィグレーションを取得してCilimum, ArgoCD を自動的にデプロイするように前節のディスクイメージ作成時に設定する。
-
-
-### Terraform の設定
-SIDELO Talos Omni のコンフィグレーションファイルの作成も Terraform から行う。
-
-### README.md の修正
-
-README.md の「事前準備」に SIDELO Talos で事前に Web UI から実施すべき内容を記載する。
-必要に応じてトークンなどの認証情報のための環境変数を追加する。
-
-## SideloLink の導入
-
-AWS SSM Agent は廃止し、SideloLink を導入する。OSの起動時に SIDELO Talos Omni に能動的に接続し、SideloLink を有効化するように設定する。
+SIDELO Talos Omni を作成する Terraform (omni.tf)を削除する。
 
 ### README.md の修正
 
-README.md の「事前準備」に SIDELO Talos で事前に Web UI から実施すべき内容を記載する。
-必要に応じてトークンなどの認証情報のための環境変数を追加する。
-AWS関連の記載は削除する。
+README.md の「事前準備」の SIDELO Talos でトークンを取得する記述は削除する。
+必要に応じてトークンなどの認証情報のための環境変数を削除する。
 
-### SSH 接続の廃止
+## SideloLink の廃止
 
-Codespaces から boot 後の Linux への SSH 接続は廃止する。SideloLink 経由でも SSH 接続はしない。 boot 後の Linux での sshd や .ssh の設定もやめる。 ansible での設定もできなくなるため、boot 後に ansible でリモート接続して実行しているタスクについては廃止するか、API呼び出しに変更する必要がある。
+SideloLink は使用せず、 talos API には mTLSで接続する。Kubernetes API への接続は talos API で　kubeconfig を取得することでやはり mTLS で接続する。
 
+## destory 時の処理の削除
+
+destroy.yml で SIDELO Talos Omni クラスタを破棄するための処理が入っているがこれを削除する。
+
+## post-create.sh の修正
+
+omnictl は使用しなくなるので削除する。

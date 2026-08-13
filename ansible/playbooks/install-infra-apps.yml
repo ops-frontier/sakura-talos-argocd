@@ -1,30 +1,44 @@
 ---
 # install-infra-apps.yml – ArgoCD app-of-apps ブートストラップ (install-charts に相当)
 #
-# Talos Linux には SSH が存在しないため、kubeconfig の取得は
-# Sidero Talos Omni の管理 API (omnictl) 経由で行う。
-# Cilium (CNI) は Omni のクラスタ定義によりノード起動時に適用される。
+# Talos Linux には SSH が存在しないため、kubeconfig は Talos API の
+# mTLS 認証を使用して取得する。
 # ArgoCD 本体はクラスタ Ready 後に公式 manifest からインストールする。
-- name: Prepare facts and fetch kubeconfig from Omni
+- name: Prepare facts and fetch kubeconfig from Talos
   hosts: localhost
   gather_facts: false
   vars:
-    _local_kubeconfig: /tmp/omni-kubeconfig.yaml
+    _local_kubeconfig: /tmp/talos-kubeconfig.yaml
   roles:
     - terraform_outputs
+    - get_my_ip
 
   tasks:
-    - name: Fetch kubeconfig from Sidero Talos Omni
+    - name: Allow management APIs from the control host
+      ops_frontier.provider.sakura_packet_filter:
+        packet_filter_id: "{{ tf_outputs.packet_filter_id.value }}"
+        state: present
+        rule_type: tcp
+        port: "{{ item }}"
+        source_network: "{{ my_ip }}"
+        api_base: "{{ sakura_api_base }}"
+        token: "{{ sakura_access_token }}"
+        secret: "{{ sakura_access_token_secret }}"
+      loop:
+        - "50000"
+        - "6443"
+
+    - name: Fetch kubeconfig through the Talos API
       ansible.builtin.include_role:
-        name: omni_kubeconfig
+        name: talos_kubeconfig
       vars:
-        omni_kubeconfig_dest: "{{ _local_kubeconfig }}"
+        talos_kubeconfig_dest: "{{ _local_kubeconfig }}"
 
 - name: Apply ArgoCD bootstrap manifests
   hosts: localhost
   gather_facts: false
   vars:
-    _local_kubeconfig: /tmp/omni-kubeconfig.yaml
+    _local_kubeconfig: /tmp/talos-kubeconfig.yaml
     _argocd_install_manifest: /tmp/argocd-install.yaml
   module_defaults:
     kubernetes.core.k8s:

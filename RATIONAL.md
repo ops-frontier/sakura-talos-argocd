@@ -139,12 +139,12 @@ CNI には高機能かつ高性能であると言われている Cilium を使�
 - ISOイメージからの起動後に自動でコマンド入力することはできない
 - グローバルIPはサーバ作成時に自動で付与されるが、ルータを経由する場合は DHCP は使用できない。
 
-## リモートアクセス (SideroLink)
+## リモートアクセス (mTLS)
 
-運用中のサーバへの SSH 接続や k8s API へのアクセスは行わず、SideroLink 経由で Sidero Talos Omni による管理のみを行う。
+運用中のサーバには SSH 接続せず、Talos API と Kubernetes API を mTLS で管理する。
 
 - Talos Linux には sshd が存在せず API 操作のみが可能なため、そもそも SSH 接続という手段自体が存在しない
-- SideroLink はノード側からアウトバウンドで Omni に接続しにいくため、パブリック IP 側でポートを一切開放せずにマシン管理・kubeconfig 取得を実現できる。これによりパケットフィルタは常時 HTTP/HTTPS のみ許可という最小構成を維持できる
-- ノードは起動時に Omni のクラスタ定義から生成されたインストールイメージ (SideroLink Join Config を含む) から起動することで、初回起動時から自動的に Omni へ接続する
-- クラスタの kubeconfig 取得や状態確認は Omni のサービスアカウントキーを用いて `omnictl` から行う
+- Talos API (50000/tcp) と Kubernetes API (6443/tcp) は Ansible 実行元のグローバル IP に限ってパケットフィルタで許可する
+- ノードごとの machine config と共通 machine CA、クライアント証明書は `talosctl gen secrets/config` で生成し、公式 imager の RAW イメージに埋め込む
+- クラスタの kubeconfig 取得や状態確認は、共通 CA から発行したクライアント証明書を用いて `talosctl` から行う
 - Ubuntu ブートストラップディスクの段階（`build-infra` / `boot` による talosctl image (Imager) のインストールイメージ書き込み時）は Talos がまだ起動していないため、この間だけは開発環境の IP に対するパケットフィルタの SSH 許可と鍵ペアによる接続を使用する

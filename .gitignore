@@ -7,6 +7,14 @@ terraform/terraform.tfstate.*.backup
 terraform/terraform.tfvars
 terraform/*.tfvars
 terraform/.lb_router_id
+terraform-lb-router/.terraform/
+terraform-lb-router/.terraform.lock.hcl
+terraform-lb-router/terraform.tfstate
+terraform-lb-router/terraform.tfstate.backup
+terraform-lb-router/terraform.tfstate.*.backup
+terraform-lb-router/terraform.tfvars
+terraform-lb-router/*.tfvars
+
 
 # SSH 鍵 (Terraform が生成)
 .ssh/

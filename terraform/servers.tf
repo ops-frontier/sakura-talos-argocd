@@ -83,7 +83,7 @@ resource "sakuracloud_server" "nodes" {
 
   # NIC 0: LB ルータスイッチ (グローバル IP / LB バックエンド)
   network_interface {
-    upstream         = sakuracloud_internet.lb_router.switch_id
+    upstream         = data.sakuracloud_internet.lb_router.switch_id
     packet_filter_id = sakuracloud_packet_filter.public.id
     user_ip_address  = cidrhost(local.lb_cidr, index(local.node_names, each.key) + 6)
   }
@@ -118,10 +118,10 @@ resource "sakuracloud_server" "nodes" {
               ens3:
                 dhcp4: false
                 addresses:
-                  - ${cidrhost(local.lb_cidr, index(local.node_names, each.key) + 6)}/${sakuracloud_internet.lb_router.netmask}
+                  - ${cidrhost(local.lb_cidr, index(local.node_names, each.key) + 6)}/${data.sakuracloud_internet.lb_router.netmask}
                 routes:
                   - to: default
-                    via: ${sakuracloud_internet.lb_router.gateway}
+                    via: ${data.sakuracloud_internet.lb_router.gateway}
                 nameservers:
                   addresses: [8.8.8.8, 1.1.1.1]
               ens4:

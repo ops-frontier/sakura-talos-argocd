@@ -1,0 +1,32 @@
+---
+- name: Fetch kubeconfig through the Talos API
+  ansible.builtin.command:
+    argv:
+      - talosctl
+      - kubeconfig
+      - "{{ talos_kubeconfig_dest }}"
+      - --talosconfig
+      - "{{ talosconfig_path }}"
+      - --nodes
+      - "{{ tf_outputs.node_public_ips.value['sv1'] }}"
+      - --endpoints
+      - "{{ tf_outputs.node_public_ips.value['sv1'] }}"
+      - --force
+  changed_when: true
+
+- name: Set the externally reachable Kubernetes API endpoint
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - config
+      - set-cluster
+      - "{{ talos_cluster_name }}"
+      - "--server=https://{{ tf_outputs.node_public_ips.value['sv1'] }}:6443"
+      - --kubeconfig
+      - "{{ talos_kubeconfig_dest }}"
+  changed_when: true
+
+- name: Restrict kubeconfig permissions
+  ansible.builtin.file:
+    path: "{{ talos_kubeconfig_dest }}"
+    mode: "0600"

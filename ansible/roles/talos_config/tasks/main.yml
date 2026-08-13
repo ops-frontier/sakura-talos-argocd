@@ -1,0 +1,93 @@
+---
+- name: Ensure Talos configuration directory exists
+  ansible.builtin.file:
+    path: "{{ talos_config_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Generate shared Talos secrets
+  ansible.builtin.command:
+    argv:
+      - talosctl
+      - gen
+      - secrets
+      - --talos-version
+      - "{{ talos_version }}"
+      - --output-file
+      - "{{ talos_config_dir }}/secrets.yaml"
+    creates: "{{ talos_config_dir }}/secrets.yaml"
+  no_log: true
+
+- name: Render node-specific machine configuration patches
+  ansible.builtin.template:
+    src: controlplane-patch.yaml.j2
+    dest: "{{ talos_config_dir }}/{{ item }}-patch.yaml"
+    mode: "0600"
+  loop: "{{ groups['_boot_servers'] }}"
+  vars:
+    talos_node_name: "{{ item }}"
+
+- name: Generate node-specific control plane configurations
+  ansible.builtin.command:
+    argv:
+      - talosctl
+      - gen
+      - config
+      - "{{ talos_cluster_name }}"
+      - "https://{{ tf_outputs.node_private_ips.value['sv1'] }}:6443"
+      - --with-secrets
+      - "{{ talos_config_dir }}/secrets.yaml"
+      - --config-patch
+      - "@{{ talos_config_dir }}/{{ item }}-patch.yaml"
+      - --additional-sans
+      - "{{ tf_outputs.node_public_ips.value.values() | join(',') }}"
+      - --additional-sans
+      - "{{ tf_outputs.node_private_ips.value.values() | join(',') }}"
+      - --kubernetes-version
+      - "{{ kubernetes_version | regex_replace('^v', '') }}"
+      - --talos-version
+      - "{{ talos_version }}"
+      - --install-disk
+      - /dev/vda
+      - --output-types
+      - controlplane
+      - --output
+      - "{{ talos_config_dir }}/{{ item }}.yaml"
+      - --with-docs=false
+      - --with-examples=false
+      - --force
+  loop: "{{ groups['_boot_servers'] }}"
+  no_log: true
+
+- name: Generate Talos mTLS client configuration
+  ansible.builtin.command:
+    argv:
+      - talosctl
+      - gen
+      - config
+      - "{{ talos_cluster_name }}"
+      - "https://{{ tf_outputs.node_private_ips.value['sv1'] }}:6443"
+      - --with-secrets
+      - "{{ talos_config_dir }}/secrets.yaml"
+      - --output-types
+      - talosconfig
+      - --output
+      - "{{ talosconfig_path }}"
+      - --with-docs=false
+      - --with-examples=false
+      - --force
+  no_log: true
+
+- name: Restrict generated Talos configuration permissions
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: "0600"
+  loop:
+    - "{{ talos_config_dir }}/secrets.yaml"
+    - "{{ talosconfig_path }}"
+
+- name: Restrict node configuration permissions
+  ansible.builtin.file:
+    path: "{{ talos_config_dir }}/{{ item }}.yaml"
+    mode: "0600"
+  loop: "{{ groups['_boot_servers'] }}"

@@ -5,17 +5,32 @@
   hosts: localhost
   gather_facts: false
   vars:
-    _local_kubeconfig: /tmp/omni-kubeconfig.yaml
+    _local_kubeconfig: /tmp/talos-kubeconfig.yaml
   roles:
     - terraform_outputs
+    - get_my_ip
     - push_infra_apps
   tasks:
     - block:
-        - name: Fetch kubeconfig from Sidero Talos Omni
+        - name: Allow management APIs from the control host
+          ops_frontier.provider.sakura_packet_filter:
+            packet_filter_id: "{{ tf_outputs.packet_filter_id.value }}"
+            state: present
+            rule_type: tcp
+            port: "{{ item }}"
+            source_network: "{{ my_ip }}"
+            api_base: "{{ sakura_api_base }}"
+            token: "{{ sakura_access_token }}"
+            secret: "{{ sakura_access_token_secret }}"
+          loop:
+            - "50000"
+            - "6443"
+
+        - name: Fetch kubeconfig through the Talos API
           ansible.builtin.include_role:
-            name: omni_kubeconfig
+            name: talos_kubeconfig
           vars:
-            omni_kubeconfig_dest: "{{ _local_kubeconfig }}"
+            talos_kubeconfig_dest: "{{ _local_kubeconfig }}"
 
         - name: Patch app-of-apps targetRevision
           ansible.builtin.command:

@@ -31,12 +31,12 @@ output "ssh_public_key_openssh" {
 
 output "lb_gateway" {
   description = "LB ルータのデフォルトゲートウェイ IP"
-  value       = sakuracloud_internet.lb_router.gateway
+  value       = data.sakuracloud_internet.lb_router.gateway
 }
 
 output "lb_netmask" {
   description = "LB ルータのプレフィックス長"
-  value       = sakuracloud_internet.lb_router.netmask
+  value       = data.sakuracloud_internet.lb_router.netmask
 }
 
 output "domain" {

@@ -22,6 +22,7 @@ Traefik Pod の起動・停止に連動して、さくらのクラウド LB の�
 """
 
 import base64
+import copy
 import json
 import logging
 import os
@@ -56,7 +57,7 @@ API_BASE = (
 
 # VIP ポートごとのヘルスチェック設定 (Terraform の vip ブロックと一致させる)
 _VIP_HC: dict[str, dict] = {
-    "443": {"Protocol": "tcp",  "Path": "",  "Status": ""},
+    "443": {"Protocol": "tcp"},
     "80":  {"Protocol": "http", "Path": "/", "Status": "301"},
 }
 
@@ -104,37 +105,55 @@ def _sakura_request(
     raise RuntimeError(f"Sakura API {method} {url} → max retries reached")
 
 
-def _get_lb_vip_settings() -> list[dict]:
-    """LB の Settings.LoadBalancer リストを返す。"""
+def _get_lb_settings() -> tuple[list[dict], str]:
+    """LB の Settings.LoadBalancer リストと SettingsHash を返す。"""
     # さくらのクラウドの LB は /appliance/{id} エンドポイントで管理される
     resp = _sakura_request("GET", f"/appliance/{LB_ID}")
-    return resp["Appliance"]["Settings"]["LoadBalancer"]
+    appliance = resp["Appliance"]
+    return appliance["Settings"]["LoadBalancer"], appliance["SettingsHash"]
+
+
+def _update_lb_settings(vip_settings: list[dict], settings_hash: str) -> None:
+    """SettingsHash を添えて LB の設定を更新する。"""
+    _sakura_request(
+        "PUT",
+        f"/appliance/{LB_ID}",
+        {
+            "Appliance": {
+                "Settings": {"LoadBalancer": vip_settings},
+                "SettingsHash": settings_hash,
+            }
+        },
+    )
+
+
+def _server_matches(server: dict, desired: dict) -> bool:
+    """API が補完するヘルスチェック既定値を除いてサーバ設定を比較する。"""
+    health_check = server.get("HealthCheck", {})
+    desired_health_check = desired["HealthCheck"]
+    return (
+        server.get("IPAddress") == desired["IPAddress"]
+        and str(server.get("Port")) == desired["Port"]
+        and server.get("Enabled") == desired["Enabled"]
+        and health_check.get("Protocol") == desired_health_check["Protocol"]
+        and health_check.get("Path", "") == desired_health_check.get("Path", "")
+        and health_check.get("Status", "") == desired_health_check.get("Status", "")
+    )
 
 
 def _sync_lb_servers(active_ips: frozenset[str]) -> bool:
     """LB_VIP の全ポートのサーバ一覧を active_ips に一致させる。変更時 True を返す。"""
-    vip_settings = _get_lb_vip_settings()
+    vip_settings, settings_hash = _get_lb_settings()
     changed = False
+    added_servers: set[tuple[str, str]] = set()
 
     for vip_conf in vip_settings:
         if vip_conf["VirtualIPAddress"] != LB_VIP:
             continue
 
         port = str(vip_conf["Port"])
-        hc = _VIP_HC.get(port, {"Protocol": "tcp", "Path": "", "Status": ""})
-
-        current_ips = frozenset(
-            s["IPAddress"] for s in vip_conf.get("Servers", [])
-        )
-        if current_ips == active_ips:
-            log.debug("VIP %s:%s unchanged: %s", LB_VIP, port, sorted(active_ips))
-            continue
-
-        log.info(
-            "VIP %s:%s update: %s → %s",
-            LB_VIP, port, sorted(current_ips), sorted(active_ips),
-        )
-        vip_conf["Servers"] = [
+        hc = _VIP_HC.get(port, {"Protocol": "tcp"})
+        desired_servers = [
             {
                 "IPAddress": ip,
                 "Port": port,
@@ -143,14 +162,48 @@ def _sync_lb_servers(active_ips: frozenset[str]) -> bool:
             }
             for ip in sorted(active_ips)
         ]
+
+        current_servers = vip_conf.get("Servers", [])
+        current_ips = frozenset(server["IPAddress"] for server in current_servers)
+        current_by_ip = {server["IPAddress"]: server for server in current_servers}
+        added_servers.update((port, ip) for ip in active_ips - current_ips)
+
+        if (
+            len(current_servers) == len(desired_servers)
+            and all(
+                _server_matches(current_by_ip.get(desired["IPAddress"], {}), desired)
+                for desired in desired_servers
+            )
+        ):
+            log.debug("VIP %s:%s unchanged: %s", LB_VIP, port, sorted(active_ips))
+            continue
+
+        log.info(
+            "VIP %s:%s update: %s → %s",
+            LB_VIP, port, sorted(current_ips), sorted(active_ips),
+        )
+        vip_conf["Servers"] = desired_servers
         changed = True
 
     if changed:
-        _sakura_request(
-            "PUT",
-            f"/appliance/{LB_ID}",
-            {"Appliance": {"Settings": {"LoadBalancer": vip_settings}}},
-        )
+        if added_servers:
+            staged_settings = copy.deepcopy(vip_settings)
+            for vip_conf in staged_settings:
+                port = str(vip_conf["Port"])
+                for server in vip_conf.get("Servers", []):
+                    if (port, server["IPAddress"]) in added_servers:
+                        server["Enabled"] = "False"
+            _update_lb_settings(staged_settings, settings_hash)
+            vip_settings, settings_hash = _get_lb_settings()
+            for vip_conf in vip_settings:
+                if vip_conf["VirtualIPAddress"] != LB_VIP:
+                    continue
+                port = str(vip_conf["Port"])
+                for server in vip_conf.get("Servers", []):
+                    if (port, server["IPAddress"]) in added_servers:
+                        server["Enabled"] = "True"
+
+        _update_lb_settings(vip_settings, settings_hash)
         # 設定をハードウェアに適用 (POST ではなく PUT)
         _sakura_request("PUT", f"/appliance/{LB_ID}/config", {})
         log.info("LB config applied: active_ips=%s", sorted(active_ips))
