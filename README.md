@@ -111,6 +111,96 @@ graph TD
   argocd -->|Manages| observability
 ```
 
+### Kubernetes API
+
+Kubernetes API と etcd は3台のコントロールプレーンで稼働し、 etcd は Raft でリーダ選出を行ってマルチマスタクラスタを組み、複製同期している。
+
+```mermaid
+graph LR
+  subgraph sv1
+    A1[kube-apiserver]
+    E1[etcd]
+    A1 --> E1
+  end
+  subgraph sv2
+    A2[kube-apiserver]
+    E2[etcd]
+    A2 --> E2
+  end
+  subgraph sv3
+    A3[kube-apiserver]
+    E3[etcd]
+    A3 --> E3
+  end
+
+  E1 <-->|Raft| E2
+  E2 <-->|Raft| E3
+  E3 <-->|Raft| E1
+```
+
+#### 冗長化とアクセス経路
+
+Kubernetes API は3台のコントロールプレーンで稼働し、アクセス元ごとに以下の経路で分散する。
+
+- 外部クライアントは `k8s-api.${DOMAIN}:6443` を使用する。Cloudflare DNS がさくらのクラウド L4 LB の VIP を返し、L4 LB が Ready ノードへ分散する。LB は DSR 方式のため、選択されたノードの Cilium が `kubernetes-api-lb` Service の `externalIPs` として VIP を受け、3台の kube-apiserver endpoint へ分散する。
+- Cilium agent は各ノードの `localhost:7445` にある KubePrism を使用する。KubePrism が健全な kube-apiserver を選択する。
+- Pod 内の一般的な Kubernetes クライアントは `kubernetes.default.svc:443` を使用する。Service DNS が標準の Kubernetes Service を指し、Cilium Service LB が3台の kube-apiserver endpoint へ分散する。
+
+```mermaid
+flowchart LR
+   subgraph external [クラスタ外部]
+      externalClient[外部クライアント]
+      externalFqdn[外部 FQDN<br/>k8s-api.DOMAIN:6443]
+      cloudflare[Cloudflare DNS]
+      sakuraLb[さくらのクラウド<br/>L4 LB VIP:6443]
+
+      externalClient --> externalFqdn
+      externalFqdn --> cloudflare
+      cloudflare --> sakuraLb
+   end
+
+   subgraph nodeEntry [LB が選択した Ready ノード]
+      ciliumExternal[Cilium externalIP 処理<br/>kubernetes-api-lb]
+   end
+
+   subgraph nodeComponents [ノードコンポーネント]
+      ciliumAgent[Cilium agent]
+      kubePrism[KubePrism<br/>localhost:7445]
+
+      ciliumAgent --> kubePrism
+   end
+
+   subgraph podNetwork [Pod ネットワーク]
+      podClient[一般 Kubernetes クライアント]
+      internalFqdn[Service DNS<br/>kubernetes.default.svc:443]
+      kubernetesService[Kubernetes Service<br/>ClusterIP 10.96.0.1:443]
+      ciliumServiceLb[Cilium Service LB]
+
+      podClient --> internalFqdn
+      internalFqdn --> kubernetesService
+      kubernetesService --> ciliumServiceLb
+   end
+
+   subgraph controlPlane [コントロールプレーン]
+      api1[sv1 kube-apiserver:6443]
+      api2[sv2 kube-apiserver:6443]
+      api3[sv3 kube-apiserver:6443]
+   end
+
+   sakuraLb -->|DSR で分散| ciliumExternal
+   ciliumExternal -->|Service LB で分散| api1
+   ciliumExternal -->|Service LB で分散| api2
+   ciliumExternal -->|Service LB で分散| api3
+   kubePrism -->|健全な API へ分散| api1
+   kubePrism -->|健全な API へ分散| api2
+   kubePrism -->|健全な API へ分散| api3
+   ciliumServiceLb -->|Service LB で分散| api1
+   ciliumServiceLb -->|Service LB で分散| api2
+   ciliumServiceLb -->|Service LB で分散| api3
+```
+
+クラスタ初期構築時は Cilium Service LB がまだ存在しないため、`boot` は Cilium のインストール完了まで一時的に sv1 の公開 IP へ直接接続し、その後に外部 FQDN へ切り替える。
+
 ### 操作コマンド
 
 ターミナルから使用できる構築作業に便利なコマンドを用意している。以下のコマンドを post-create.sh で ~/.bashrc に alias を登録し、 ansible-playbook コマンドで playbook を実行するようになっている。

@@ -19,6 +19,11 @@ output "lb_global_ip" {
   value       = local.lb_vip_ip
 }
 
+output "k8s_api_fqdn" {
+  description = "外部向け Kubernetes API の FQDN"
+  value       = "k8s-api.${var.domain}"
+}
+
 output "packet_filter_id" {
   description = "パブリック NIC 用パケットフィルタ ID (packet_filter_ssh_allow/deny ロールで SSH 許可ルールの追加・削除に使用)"
   value       = sakuracloud_packet_filter.public.id

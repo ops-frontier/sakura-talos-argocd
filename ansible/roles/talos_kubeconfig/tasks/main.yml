@@ -21,7 +21,7 @@
       - config
       - set-cluster
       - "{{ talos_cluster_name }}"
-      - "--server=https://{{ tf_outputs.node_public_ips.value['sv1'] }}:6443"
+      - "--server=https://{{ tf_outputs.k8s_api_fqdn.value }}:6443"
       - --kubeconfig
       - "{{ talos_kubeconfig_dest }}"
   changed_when: true

@@ -59,6 +59,7 @@ API_BASE = (
 _VIP_HC: dict[str, dict] = {
     "443": {"Protocol": "tcp"},
     "80":  {"Protocol": "http", "Path": "/", "Status": "301"},
+    "6443": {"Protocol": "tcp"},
 }
 
 

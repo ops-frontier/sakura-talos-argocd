@@ -43,6 +43,8 @@
       - "{{ tf_outputs.node_public_ips.value.values() | join(',') }}"
       - --additional-sans
       - "{{ tf_outputs.node_private_ips.value.values() | join(',') }}"
+      - --additional-sans
+      - "{{ tf_outputs.k8s_api_fqdn.value }}"
       - --kubernetes-version
       - "{{ kubernetes_version | regex_replace('^v', '') }}"
       - --talos-version

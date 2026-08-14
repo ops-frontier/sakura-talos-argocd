@@ -25,7 +25,7 @@ locals {
 
 resource "sakuracloud_load_balancer" "lb" {
   name        = "${var.sakura_label_prefix}-lb"
-  description = "HTTP/HTTPS L4 ロードバランサ"
+  description = "HTTP/HTTPS/Kubernetes API L4 ロードバランサ"
   plan        = "standard"
 
   network_interface {
@@ -51,6 +51,23 @@ resource "sakuracloud_load_balancer" "lb" {
     delay_loop = 10
     # サーバ登録は lb-controller が API 経由で動的に管理する
   }
+
+  # Kubernetes API VIP
+  # Cilium / lb-controller の起動前から API に接続できるよう3台を初期登録する。
+  vip {
+    vip        = local.lb_vip_ip
+    port       = 6443
+    delay_loop = 10
+
+    dynamic "server" {
+      for_each = sakuracloud_server.nodes
+      content {
+        ip_address = server.value.ip_address
+        protocol   = "tcp"
+        enabled    = true
+      }
+    }
+  }
 }
 
 # ---------------------------------------------------------------
@@ -75,6 +92,16 @@ resource "cloudflare_record" "grafana" {
   zone_id = data.cloudflare_zone.main.id
   type    = "A"
   name    = "grafana.poc"
+  content = local.lb_vip_ip
+  ttl     = 300
+  proxied = false
+}
+
+# k8s-api A レコード -> LB VIP グローバル IP
+resource "cloudflare_record" "k8s_api" {
+  zone_id = data.cloudflare_zone.main.id
+  type    = "A"
+  name    = "k8s-api"
   content = local.lb_vip_ip
   ttl     = 300
   proxied = false

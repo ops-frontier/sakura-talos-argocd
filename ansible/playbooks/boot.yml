@@ -94,7 +94,7 @@
       delay: 10
       changed_when: true
 
-    - name: Set the externally reachable Kubernetes API endpoint
+    - name: Set the bootstrap Kubernetes API endpoint
       ansible.builtin.command:
         argv:
           - kubectl
@@ -159,6 +159,70 @@
                 - NET_ADMIN
                 - SYS_ADMIN
                 - SYS_RESOURCE
+
+    - name: Configure the Kubernetes API VIP in Cilium
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _local_kubeconfig }}"
+        state: present
+        definition:
+          - apiVersion: v1
+            kind: Service
+            metadata:
+              name: kubernetes-api-lb
+              namespace: default
+            spec:
+              externalIPs:
+                - "{{ tf_outputs.lb_global_ip.value }}"
+              ports:
+                - name: https
+                  protocol: TCP
+                  port: 6443
+                  targetPort: 6443
+          - apiVersion: discovery.k8s.io/v1
+            kind: EndpointSlice
+            metadata:
+              name: kubernetes-api-lb
+              namespace: default
+              labels:
+                kubernetes.io/service-name: kubernetes-api-lb
+            addressType: IPv4
+            ports:
+              - name: https
+                protocol: TCP
+                port: 6443
+            endpoints:
+              - addresses:
+                  - "{{ tf_outputs.node_private_ips.value['sv1'] }}"
+              - addresses:
+                  - "{{ tf_outputs.node_private_ips.value['sv2'] }}"
+              - addresses:
+                  - "{{ tf_outputs.node_private_ips.value['sv3'] }}"
+
+    - name: Set the externally reachable Kubernetes API endpoint
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - config
+          - set-cluster
+          - "{{ talos_cluster_name }}"
+          - "--server=https://{{ tf_outputs.k8s_api_fqdn.value }}:6443"
+          - --kubeconfig
+          - "{{ _local_kubeconfig }}"
+      changed_when: true
+
+    - name: Wait for the load-balanced Kubernetes API to be ready
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ _local_kubeconfig }}"
+          - get
+          - --raw=/readyz
+      register: _load_balanced_kubernetes_api_ready
+      until: _load_balanced_kubernetes_api_ready.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
 
     - name: Wait for all Kubernetes nodes to be ready
       ansible.builtin.command:

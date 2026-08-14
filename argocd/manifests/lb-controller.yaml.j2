@@ -83,6 +83,10 @@ spec:
           imagePullPolicy: Always
           # コンテナイメージは python:3.14-slim ベース (dev container の Python と一致)
           env:
+            - name: KUBERNETES_SERVICE_HOST
+              value: "kubernetes.default.svc"
+            - name: KUBERNETES_SERVICE_PORT
+              value: "443"
             - name: SAKURA_TOKEN
               valueFrom:
                 secretKeyRef:

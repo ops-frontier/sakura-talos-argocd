@@ -82,10 +82,16 @@ def _is_ssh_rule(expr):
     return proto == "tcp" and dst == "22"
 
 
-def _is_tcp_port_rule(expr, port):
+def _is_tcp_port_rule(expr, port, source_network=None):
     proto = expr.get("Protocol", "")
     dst = expr.get("DestinationPort", "")
-    return proto == "tcp" and dst == port
+    source = expr.get("SourceNetwork", "")
+
+    return (
+        proto == "tcp"
+        and dst == port
+        and (source_network is None or source == source_network)
+    )
 
 
 def _insert_before_deny(expressions, new_rules):
@@ -138,7 +144,10 @@ def main():
         if rule_type == "ssh":
             filtered = [e for e in expressions if not _is_ssh_rule(e)]
         else:
-            filtered = [e for e in expressions if not _is_tcp_port_rule(e, port)]
+            filtered = [
+                e for e in expressions
+                if not _is_tcp_port_rule(e, port, source_network)
+            ]
 
         changed = len(filtered) != len(expressions)
 
